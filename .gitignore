@@ -1,6 +1,8 @@
+/target/
 .DS_Store
-target/
-
+.env
+.env.*
+!.env.example
 .openflow/runs/
 .openflow/tmp/
 *.log

@@ -15,6 +15,7 @@
 
 ## Verification
 
+- Run `./scripts/check.sh` before publishing changes; GitHub Actions runs the same gate on push and pull request.
 - Run `cargo test` for scheduler/plan validation changes.
 - Run `cargo fmt --check` for formatting checks.
 - Run `cargo clippy --all-targets --all-features` before publish if dependencies are available.

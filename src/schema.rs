@@ -114,3 +114,88 @@ fn nullable_sandbox() -> Value {
 fn nullable_integer(minimum: u32, maximum: u32) -> Value {
     json!({"anyOf": [{"type": "integer", "minimum": minimum, "maximum": maximum}, {"type": "null"}]})
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn workflow_schema_is_strict_output_compatible() {
+        assert_strict_objects_require_all_properties(&workflow_plan_schema(), "$");
+    }
+
+    #[test]
+    fn verifier_schema_is_strict_output_compatible() {
+        assert_strict_objects_require_all_properties(&verifier_schema(), "$");
+    }
+
+    #[test]
+    fn workflow_override_fields_are_nullable() {
+        let schema = workflow_plan_schema();
+        assert_nullable(&schema["properties"]["defaults"]["properties"]["agent"]);
+        assert_nullable(&schema["properties"]["defaults"]["properties"]["agentBin"]);
+        assert_nullable(&schema["properties"]["defaults"]["properties"]["model"]);
+        assert_nullable(&schema["properties"]["defaults"]["properties"]["sandbox"]);
+        assert_nullable(&schema["properties"]["tasks"]["items"]["properties"]["model"]);
+        assert_nullable(&schema["properties"]["tasks"]["items"]["properties"]["maxRetries"]);
+        assert_nullable(&schema["properties"]["tasks"]["items"]["properties"]["verifierModel"]);
+    }
+
+    fn assert_strict_objects_require_all_properties(schema: &Value, path: &str) {
+        if schema.get("type").and_then(Value::as_str) == Some("object")
+            && schema.get("additionalProperties").and_then(Value::as_bool) == Some(false)
+        {
+            let properties = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .unwrap_or_else(|| panic!("{path} is strict but has no properties object"));
+            let required = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .unwrap_or_else(|| panic!("{path} is strict but has no required array"))
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .unwrap_or_else(|| panic!("{path} has a non-string required entry"))
+                        .to_string()
+                })
+                .collect::<BTreeSet<_>>();
+
+            for key in properties.keys() {
+                assert!(
+                    required.contains(key),
+                    "{path} property {key:?} must be listed in required"
+                );
+            }
+        }
+
+        match schema {
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    assert_strict_objects_require_all_properties(item, &format!("{path}[{index}]"));
+                }
+            }
+            Value::Object(entries) => {
+                for (key, value) in entries {
+                    assert_strict_objects_require_all_properties(value, &format!("{path}.{key}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn assert_nullable(schema: &Value) {
+        let any_of = schema
+            .get("anyOf")
+            .and_then(Value::as_array)
+            .expect("nullable field should use anyOf");
+        assert!(
+            any_of
+                .iter()
+                .any(|entry| entry.get("type").and_then(Value::as_str) == Some("null")),
+            "nullable field should accept null: {schema}"
+        );
+    }
+}

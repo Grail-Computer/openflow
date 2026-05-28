@@ -379,12 +379,20 @@ Use Openflow with this harness command: kimi-k2-cli run --prompt-file {prompt_fi
 ## Development
 
 ```bash
-cargo fmt
-cargo test
-cargo clippy --all-targets --all-features
+./scripts/check.sh
 ```
 
-The test suite includes fake built-in and custom agent harnesses so the planner, runner, verifier, state, and report plumbing can be tested without spending real agent tokens.
+The local check script runs:
+
+```bash
+cargo fmt --check
+cargo check --locked --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps --document-private-items
+```
+
+GitHub Actions runs the same script on every push and pull request. The test suite includes fake built-in and custom agent harnesses so the planner, runner, verifier, state, and report plumbing can be tested without spending real agent tokens.
 
 ## Roadmap
 

@@ -703,4 +703,46 @@ esac
         assert!(report.contains("Custom worker result with model worker-model"));
         assert!(report.contains("Custom verifier accepted the result with model verifier-model"));
     }
+
+    #[test]
+    fn resume_options_preserve_stored_custom_harness() {
+        let plan_args = CommonArgs {
+            template: Some("audit".to_string()),
+            concurrency: Some(9),
+            max_retries: Some(0),
+            model: Some("planner-model".to_string()),
+            agent: Some("kimi-k2".to_string()),
+            agent_bin: Some("kimi-k2-cli".to_string()),
+            agent_command: Some("kimi-k2-cli run --prompt-file {prompt_file}".to_string()),
+            codex_bin: None,
+            skip_git_repo_check: true,
+            yes: true,
+        };
+        let stored = to_run_options(&plan_args);
+
+        let resume_args = CommonArgs {
+            template: None,
+            concurrency: None,
+            max_retries: None,
+            model: None,
+            agent: None,
+            agent_bin: None,
+            agent_command: None,
+            codex_bin: None,
+            skip_git_repo_check: false,
+            yes: true,
+        };
+        let runner = to_runner_options(&resume_args, &stored);
+
+        assert_eq!(runner.concurrency, 9);
+        assert_eq!(runner.max_retries, 0);
+        assert_eq!(runner.model.as_deref(), Some("planner-model"));
+        assert_eq!(runner.agent, "kimi-k2");
+        assert_eq!(runner.agent_bin, "kimi-k2-cli");
+        assert_eq!(
+            runner.agent_command.as_deref(),
+            Some("kimi-k2-cli run --prompt-file {prompt_file}")
+        );
+        assert!(runner.skip_git_repo_check);
+    }
 }
