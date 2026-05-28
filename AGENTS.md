@@ -11,6 +11,7 @@
 - Prefer deterministic validation and reporting over asking an LLM to do bookkeeping.
 - Do not add npm, Node, or TypeScript tooling; keep the CLI Rust-native.
 - Keep Codex as a first-class preset, not a hard product dependency. Custom harnesses should work through `--agent-command`.
+- Keep structured-output schemas strict-compatible: list every object property in `required` when `additionalProperties: false`, and model optional overrides as nullable values.
 
 ## Verification
 
@@ -18,3 +19,4 @@
 - Run `cargo fmt --check` for formatting checks.
 - Run `cargo clippy --all-targets --all-features` before publish if dependencies are available.
 - Do not run real `openflow run` as a routine test because it spends real agent tokens or credits.
+- When a live Codex-backed test is explicitly needed, run it only in a disposable repo; the Codex CLI may need sandbox escalation to write its local state.

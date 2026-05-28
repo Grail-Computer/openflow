@@ -29,11 +29,17 @@ pub struct RunState {
 #[serde(rename_all = "camelCase")]
 pub struct RunOptions {
     pub concurrency: usize,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: usize,
     pub model: Option<String>,
     pub agent: String,
     pub agent_bin: String,
     pub agent_command: Option<String>,
     pub skip_git_repo_check: bool,
+}
+
+fn default_max_retries() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -61,6 +61,7 @@ pub fn run_workflow(state: &mut RunState, run_dir: &Path, options: &RunnerOption
                 task_state.status = "running".to_string();
                 task_state.started_at = Some(now());
             }
+            println!("started {}: {}", task.id, task.title);
         }
         save_state(run_dir, state)?;
 
@@ -76,6 +77,7 @@ pub fn run_workflow(state: &mut RunState, run_dir: &Path, options: &RunnerOption
             for handle in handles {
                 match handle.join().expect("worker thread panicked") {
                     Ok(outcome) => {
+                        println!("{} {}", outcome.task_state.status, outcome.task_id);
                         for (kind, message) in outcome.events {
                             add_event(state, &kind, &message, Some(outcome.task_id.clone()));
                         }

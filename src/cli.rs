@@ -82,20 +82,16 @@ struct RunIdArg {
 struct CommonArgs {
     #[arg(long, help = "Workflow template: audit, migration, or pr-review")]
     template: Option<String>,
-    #[arg(long, default_value_t = 4, help = "Maximum concurrent agent workers")]
-    concurrency: usize,
-    #[arg(long, default_value_t = 1, help = "Verifier-driven retries per task")]
-    max_retries: usize,
+    #[arg(long, help = "Maximum concurrent agent workers")]
+    concurrency: Option<usize>,
+    #[arg(long, help = "Verifier-driven retries per task")]
+    max_retries: Option<usize>,
     #[arg(long, help = "Model name passed through to the selected harness")]
     model: Option<String>,
-    #[arg(long, default_value = "codex", help = "Agent preset/name")]
-    agent: String,
-    #[arg(
-        long,
-        default_value = "codex",
-        help = "Executable for built-in presets"
-    )]
-    agent_bin: String,
+    #[arg(long, help = "Agent preset/name, default: codex")]
+    agent: Option<String>,
+    #[arg(long, help = "Executable for built-in presets, default: codex")]
+    agent_bin: Option<String>,
     #[arg(long, help = "Custom shell command template for any harness")]
     agent_command: Option<String>,
     #[arg(long, hide = true)]
@@ -235,7 +231,8 @@ fn execute_and_report(
     run_dir: &Path,
     args: &CommonArgs,
 ) -> Result<()> {
-    run_workflow(state, run_dir, &to_runner_options(args))?;
+    let runner_options = to_runner_options(args, &state.options);
+    run_workflow(state, run_dir, &runner_options)?;
     let report = generate_report(state, run_dir)?;
     println!("\nRun {}: {}", state.status, state.id);
     println!("Report: {}", report.display());
@@ -313,31 +310,37 @@ fn create_plan(
         &schema_dir.join("workflow-plan.schema.json"),
         &workflow_plan_schema(),
     )?;
-    let planner_prompt = build_planner_prompt(prompt, template);
+    let run_options = to_run_options(args);
+    let planner_prompt = build_planner_prompt(prompt, template, &run_options);
     write_text(&run_dir.join("planner-prompt.md"), &planner_prompt)?;
     let output_path = run_dir.join("plan.raw.json");
     run_agent_exec(&AgentExec {
-        agent: args.agent.clone(),
-        agent_bin: effective_agent_bin(args),
-        agent_command: args.agent_command.clone(),
+        agent: run_options.agent.clone(),
+        agent_bin: run_options.agent_bin.clone(),
+        agent_command: run_options.agent_command.clone(),
         cwd: cwd.to_path_buf(),
         prompt: planner_prompt,
         prompt_file: Some(run_dir.join("planner-prompt.md")),
         sandbox: "read-only".to_string(),
-        model: args.model.clone(),
+        model: run_options.model.clone(),
         output_file: Some(output_path.clone()),
         schema_file: Some(schema_dir.join("workflow-plan.schema.json")),
         log_file: Some(run_dir.join("planner.log")),
-        skip_git_repo_check: args.skip_git_repo_check,
+        skip_git_repo_check: run_options.skip_git_repo_check,
     })?;
     let raw = fs::read_to_string(&output_path)?;
-    let plan = parse_json_object::<WorkflowPlan>(&raw, "workflow plan")?;
-    let plan = normalize_plan(plan, args.concurrency)?;
+    let mut plan = parse_json_object::<WorkflowPlan>(&raw, "workflow plan")?;
+    apply_explicit_cli_defaults(&mut plan, args);
+    let plan = normalize_plan(plan, run_options.concurrency)?;
     write_json(&run_dir.join("plan.json"), &plan)?;
     Ok(plan)
 }
 
-fn build_planner_prompt(prompt: &str, template: Option<&crate::templates::Template>) -> String {
+fn build_planner_prompt(
+    prompt: &str,
+    template: Option<&crate::templates::Template>,
+    options: &RunOptions,
+) -> String {
     format!(
         "You are the planner for Openflow, an open-source dynamic workflow runner for CLI agent harnesses.\n\n\
 Create a strict, executable workflow plan as JSON only. The plan will be validated and then executed by separate agent workers.\n\n\
@@ -346,15 +349,32 @@ Planning rules:\n\
 - Prefer read-only exploration and verification tasks unless the user clearly asks for code changes.\n\
 - Set writes=false for audit, research, review, and planning tasks.\n\
 - Set writes=true only when a worker must edit files.\n\
-- Keep the default UX simple: omit optional fields unless a task truly needs a different model, agent harness, sandbox, retry count, or verifier setup.\n\
+- Keep the default UX simple: use null for optional override fields unless a task truly needs a different model, agent harness, sandbox, retry count, or verifier setup.\n\
 - Use workflow defaults for settings that should apply to many tasks, and task overrides only for exceptions.\n\
 - To use a different model for one step, set that task's model field.\n\
 - Keep each task prompt scoped enough for a fresh worker with no conversation history.\n\
 - Include verifier guidance so another worker can reject weak or unsupported results.\n\
 - Use stable kebab-case task ids.\n\n\
+Runtime defaults:\n\
+- agent: {}\n\
+- agentBin: {}\n\
+- agentCommand: {}\n\
+- model: {}\n\
+- maxConcurrency: {}\n\
+- maxRetries: {}\n\n\
 Template guidance:\n{}\n\n\
 User request:\n{}\n\n\
 Return a JSON object matching the provided schema. Do not wrap it in markdown.\n",
+        options.agent,
+        options.agent_bin,
+        if options.agent_command.is_some() {
+            "<configured>"
+        } else {
+            "none"
+        },
+        options.model.as_deref().unwrap_or("none"),
+        options.concurrency,
+        options.max_retries,
         template
             .map(|template| template.content.as_str())
             .unwrap_or("none"),
@@ -436,32 +456,106 @@ fn read_prompt(parts: &[String]) -> Result<String> {
 }
 
 fn to_run_options(args: &CommonArgs) -> RunOptions {
+    let agent = effective_agent(args, None);
+    let agent_bin = effective_agent_bin(args, None, &agent);
     RunOptions {
-        concurrency: args.concurrency,
+        concurrency: effective_concurrency(args, None),
+        max_retries: effective_max_retries(args, None),
         model: args.model.clone(),
-        agent: args.agent.clone(),
-        agent_bin: effective_agent_bin(args),
+        agent,
+        agent_bin,
         agent_command: args.agent_command.clone(),
         skip_git_repo_check: args.skip_git_repo_check,
     }
 }
 
-fn to_runner_options(args: &CommonArgs) -> RunnerOptions {
+fn to_runner_options(args: &CommonArgs, stored: &RunOptions) -> RunnerOptions {
+    let agent = effective_agent(args, Some(stored));
+    let agent_bin = effective_agent_bin(args, Some(stored), &agent);
     RunnerOptions {
-        concurrency: args.concurrency.clamp(1, 50),
-        max_retries: args.max_retries.clamp(0, 5),
-        model: args.model.clone(),
-        agent: args.agent.clone(),
-        agent_bin: effective_agent_bin(args),
-        agent_command: args.agent_command.clone(),
-        skip_git_repo_check: args.skip_git_repo_check,
+        concurrency: effective_concurrency(args, Some(stored)),
+        max_retries: effective_max_retries(args, Some(stored)),
+        model: args.model.clone().or_else(|| stored.model.clone()),
+        agent,
+        agent_bin,
+        agent_command: args
+            .agent_command
+            .clone()
+            .or_else(|| stored.agent_command.clone()),
+        skip_git_repo_check: args.skip_git_repo_check || stored.skip_git_repo_check,
     }
 }
 
-fn effective_agent_bin(args: &CommonArgs) -> String {
-    args.codex_bin
-        .clone()
-        .unwrap_or_else(|| args.agent_bin.clone())
+fn apply_explicit_cli_defaults(plan: &mut WorkflowPlan, args: &CommonArgs) {
+    if let Some(max_retries) = args.max_retries {
+        plan.verification.max_retries = max_retries;
+    }
+    if let Some(model) = args.model.as_ref().filter(|value| !value.trim().is_empty())
+        && plan.defaults.model.is_none()
+    {
+        plan.defaults.model = Some(model.trim().to_string());
+    }
+    if let Some(agent) = args.agent.as_ref().filter(|value| !value.trim().is_empty())
+        && plan.defaults.agent.is_none()
+    {
+        plan.defaults.agent = Some(agent.trim().to_string());
+    }
+    if (args.agent_bin.is_some() || args.codex_bin.is_some()) && plan.defaults.agent_bin.is_none() {
+        let agent = effective_agent(args, None);
+        plan.defaults.agent_bin = Some(effective_agent_bin(args, None, &agent));
+    }
+}
+
+fn effective_concurrency(args: &CommonArgs, stored: Option<&RunOptions>) -> usize {
+    args.concurrency
+        .or_else(|| stored.map(|options| options.concurrency))
+        .unwrap_or(4)
+        .clamp(1, 50)
+}
+
+fn effective_max_retries(args: &CommonArgs, stored: Option<&RunOptions>) -> usize {
+    args.max_retries
+        .or_else(|| stored.map(|options| options.max_retries))
+        .unwrap_or(1)
+        .clamp(0, 5)
+}
+
+fn effective_agent(args: &CommonArgs, stored: Option<&RunOptions>) -> String {
+    args.agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| stored.map(|options| options.agent.clone()))
+        .unwrap_or_else(|| "codex".to_string())
+}
+
+fn effective_agent_bin(args: &CommonArgs, stored: Option<&RunOptions>, agent: &str) -> String {
+    if let Some(codex_bin) = args
+        .codex_bin
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return codex_bin.trim().to_string();
+    }
+    if let Some(agent_bin) = args
+        .agent_bin
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return agent_bin.trim().to_string();
+    }
+    if args.agent.is_none()
+        && let Some(stored) = stored
+        && stored.agent == agent
+    {
+        return stored.agent_bin.clone();
+    }
+    if agent == "codex" {
+        "codex".to_string()
+    } else {
+        agent.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -488,7 +582,7 @@ mkdir -p "$(dirname "$out")"
 case "$out" in
   *plan.raw.json)
     cat > "$out" <<'JSON'
-{"version":1,"name":"Fake audit","objective":"Exercise Openflow plumbing","riskLevel":"low","maxConcurrency":2,"tasks":[{"id":"inspect-repo","title":"Inspect repo","kind":"explore","prompt":"Return a fake result.","expectedOutput":"markdown","writes":false}],"verification":{"strategy":"independent","verifiersPerTask":1,"maxRetries":0,"prompt":"Pass fake results."}}
+{"version":1,"name":"Fake audit","objective":"Exercise Openflow plumbing","riskLevel":"low","maxConcurrency":2,"tasks":[{"id":"inspect-repo","title":"Inspect repo","kind":"explore","prompt":"Return a fake result.","expectedOutput":"markdown","writes":false}],"verification":{"strategy":"independent","verifiersPerTask":1,"maxRetries":1,"prompt":"Pass fake results."}}
 JSON
     ;;
   *verifier-*.json)
@@ -509,11 +603,11 @@ esac
 
         let args = CommonArgs {
             template: Some("audit".to_string()),
-            concurrency: 2,
-            max_retries: 0,
+            concurrency: Some(2),
+            max_retries: Some(0),
             model: None,
-            agent: "codex".to_string(),
-            agent_bin: fake.display().to_string(),
+            agent: Some("codex".to_string()),
+            agent_bin: Some(fake.display().to_string()),
             agent_command: None,
             codex_bin: None,
             skip_git_repo_check: true,
@@ -530,6 +624,7 @@ esac
         )
         .unwrap();
         let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args).unwrap();
+        assert_eq!(plan.verification.max_retries, 0);
         attach_plan(&mut state, plan);
         save_state(&run_dir, &mut state).unwrap();
         execute_and_report(&mut state, &run_dir, &args).unwrap();
@@ -568,11 +663,11 @@ esac
 
         let args = CommonArgs {
             template: Some("audit".to_string()),
-            concurrency: 2,
-            max_retries: 0,
+            concurrency: Some(2),
+            max_retries: Some(0),
             model: None,
-            agent: "custom".to_string(),
-            agent_bin: "custom".to_string(),
+            agent: Some("custom".to_string()),
+            agent_bin: Some("custom".to_string()),
             agent_command: Some(format!("{}", fake.display())),
             codex_bin: None,
             skip_git_repo_check: true,
@@ -591,7 +686,19 @@ esac
         let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args).unwrap();
         attach_plan(&mut state, plan);
         save_state(&run_dir, &mut state).unwrap();
-        execute_and_report(&mut state, &run_dir, &args).unwrap();
+        let resume_args = CommonArgs {
+            template: None,
+            concurrency: None,
+            max_retries: None,
+            model: None,
+            agent: None,
+            agent_bin: None,
+            agent_command: None,
+            codex_bin: None,
+            skip_git_repo_check: false,
+            yes: true,
+        };
+        execute_and_report(&mut state, &run_dir, &resume_args).unwrap();
         let report = fs::read_to_string(run_dir.join("report.md")).unwrap();
         assert!(report.contains("Custom worker result with model worker-model"));
         assert!(report.contains("Custom verifier accepted the result with model verifier-model"));
