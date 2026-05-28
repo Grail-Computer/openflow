@@ -392,7 +392,7 @@ cargo test --locked --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps --document-private-items
 ```
 
-GitHub Actions runs the same script on every push and pull request. The test suite includes fake built-in and custom agent harnesses so the planner, runner, verifier, state, and report plumbing can be tested without spending real agent tokens.
+The test suite includes fake built-in and custom agent harnesses so the planner, runner, verifier, state, and report plumbing can be tested without spending real agent tokens.
 
 ## Roadmap
 

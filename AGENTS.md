@@ -15,7 +15,8 @@
 
 ## Verification
 
-- Run `./scripts/check.sh` before publishing changes; GitHub Actions runs the same gate on push and pull request.
+- Do not add GitHub Actions or other automatic remote CI unless the user explicitly asks for it.
+- Codex must run `./scripts/check.sh` locally before publishing changes.
 - Run `cargo test` for scheduler/plan validation changes.
 - Run `cargo fmt --check` for formatting checks.
 - Run `cargo clippy --all-targets --all-features` before publish if dependencies are available.
