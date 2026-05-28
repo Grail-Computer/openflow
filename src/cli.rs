@@ -1,0 +1,511 @@
+use crate::codex::{CodexExec, run_codex_exec};
+use crate::plan::{WorkflowPlan, normalize_plan, summarize_plan};
+use crate::report::generate_report;
+use crate::runner::{RunnerOptions, run_workflow};
+use crate::schema::workflow_plan_schema;
+use crate::state::{
+    RunOptions, attach_plan, create_empty_run, load_state, resolve_run_dir, save_state,
+};
+use crate::templates::{install_project_templates, load_template, template_names};
+use crate::util::{parse_json_object, write_json, write_text};
+use crate::worktree::apply_patch_file;
+use anyhow::{Context, Result, bail};
+use clap::{Args, Parser, Subcommand};
+use std::fs;
+use std::io::{self, IsTerminal, Read, Write};
+use std::path::Path;
+
+#[derive(Parser)]
+#[command(name = "openflow")]
+#[command(about = "Open-source dynamic workflow orchestration for Codex CLI.")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Init,
+    Templates,
+    Plan(PlanArgs),
+    Approve(RunIdArg),
+    Run(RunArgs),
+    Resume(ResumeArgs),
+    Status(RunIdArg),
+    Report(ReportArgs),
+    Apply(ApplyArgs),
+}
+
+#[derive(Args)]
+struct PlanArgs {
+    #[arg(num_args = 0..)]
+    prompt: Vec<String>,
+    #[command(flatten)]
+    common: CommonArgs,
+}
+
+#[derive(Args)]
+struct RunArgs {
+    #[arg(num_args = 0..)]
+    prompt: Vec<String>,
+    #[command(flatten)]
+    common: CommonArgs,
+}
+
+#[derive(Args)]
+struct ResumeArgs {
+    run_id: Option<String>,
+    #[command(flatten)]
+    common: CommonArgs,
+}
+
+#[derive(Args)]
+struct ReportArgs {
+    run_id: Option<String>,
+    #[arg(long)]
+    print: bool,
+}
+
+#[derive(Args)]
+struct ApplyArgs {
+    run_id: Option<String>,
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Args)]
+struct RunIdArg {
+    run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct CommonArgs {
+    #[arg(long)]
+    template: Option<String>,
+    #[arg(long, default_value_t = 4)]
+    concurrency: usize,
+    #[arg(long, default_value_t = 1)]
+    max_retries: usize,
+    #[arg(long)]
+    model: Option<String>,
+    #[arg(long, default_value = "codex")]
+    codex_bin: String,
+    #[arg(long)]
+    skip_git_repo_check: bool,
+    #[arg(long)]
+    yes: bool,
+}
+
+pub fn run() -> Result<()> {
+    let cli = Cli::parse();
+    let cwd = std::env::current_dir()?;
+    match cli.command {
+        Command::Init => init(&cwd),
+        Command::Templates => {
+            for name in template_names() {
+                println!("{name}");
+            }
+            Ok(())
+        }
+        Command::Plan(args) => plan_command(&cwd, args),
+        Command::Approve(args) => approve_command(&cwd, args.run_id.as_deref()),
+        Command::Run(args) => run_command(&cwd, args),
+        Command::Resume(args) => resume_command(&cwd, args),
+        Command::Status(args) => status_command(&cwd, args.run_id.as_deref()),
+        Command::Report(args) => report_command(&cwd, args),
+        Command::Apply(args) => apply_command(&cwd, args),
+    }
+}
+
+fn init(cwd: &Path) -> Result<()> {
+    let installed = install_project_templates(cwd)?;
+    println!("Initialized .openflow in {}", cwd.display());
+    if installed.is_empty() {
+        println!("Templates already exist.");
+    } else {
+        println!("Installed templates:");
+        for path in installed {
+            println!("- {}", path.strip_prefix(cwd).unwrap_or(&path).display());
+        }
+    }
+    Ok(())
+}
+
+fn plan_command(cwd: &Path, args: PlanArgs) -> Result<()> {
+    let prompt = read_prompt(&args.prompt)?;
+    let template = load_template(cwd, args.common.template.as_deref())?;
+    let options = to_run_options(&args.common);
+    let (mut state, run_dir) = create_empty_run(
+        cwd.to_path_buf(),
+        prompt.clone(),
+        template.as_ref().map(|template| template.name.clone()),
+        options,
+    )?;
+    let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args.common)?;
+    attach_plan(&mut state, plan);
+    save_state(&run_dir, &mut state)?;
+    print_plan_summary(state.plan.as_ref().unwrap(), &state.id);
+    println!(
+        "\nNext: openflow approve {} && openflow resume {}",
+        state.id, state.id
+    );
+    Ok(())
+}
+
+fn approve_command(cwd: &Path, run_id: Option<&str>) -> Result<()> {
+    let run_dir = resolve_run_dir(cwd, run_id)?;
+    let mut state = load_state(&run_dir)?;
+    if state.status != "planned" {
+        println!("Run {} is {}; nothing to approve.", state.id, state.status);
+        return Ok(());
+    }
+    state.status = "approved".to_string();
+    save_state(&run_dir, &mut state)?;
+    println!("Approved {}", state.id);
+    Ok(())
+}
+
+fn run_command(cwd: &Path, args: RunArgs) -> Result<()> {
+    let has_prompt = !args.prompt.is_empty() || !io::stdin().is_terminal();
+    let mut state;
+    let run_dir;
+    if has_prompt {
+        let prompt = read_prompt(&args.prompt)?;
+        let template = load_template(cwd, args.common.template.as_deref().or(Some("audit")))?;
+        let options = to_run_options(&args.common);
+        let created = create_empty_run(
+            cwd.to_path_buf(),
+            prompt.clone(),
+            template.as_ref().map(|template| template.name.clone()),
+            options,
+        )?;
+        state = created.0;
+        run_dir = created.1;
+        let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args.common)?;
+        attach_plan(&mut state, plan);
+        save_state(&run_dir, &mut state)?;
+    } else {
+        run_dir = resolve_run_dir(cwd, None)?;
+        state = load_state(&run_dir)?;
+    }
+
+    if state.status == "planned" {
+        print_plan_summary(state.plan.as_ref().context("missing plan")?, &state.id);
+        confirm_plan(&args.common, state.plan.as_ref().unwrap())?;
+        state.status = "approved".to_string();
+        save_state(&run_dir, &mut state)?;
+    }
+    execute_and_report(&mut state, &run_dir, &args.common)
+}
+
+fn resume_command(cwd: &Path, args: ResumeArgs) -> Result<()> {
+    let run_dir = resolve_run_dir(cwd, args.run_id.as_deref())?;
+    let mut state = load_state(&run_dir)?;
+    if state.status == "completed" {
+        println!("Run {} is already completed.", state.id);
+        return Ok(());
+    }
+    if state.status == "planned" {
+        print_plan_summary(state.plan.as_ref().context("missing plan")?, &state.id);
+        confirm_plan(&args.common, state.plan.as_ref().unwrap())?;
+        state.status = "approved".to_string();
+    }
+    for task in state.tasks.values_mut() {
+        if matches!(task.status.as_str(), "running" | "failed" | "blocked") {
+            task.status = "pending".to_string();
+            task.error = None;
+        }
+    }
+    save_state(&run_dir, &mut state)?;
+    execute_and_report(&mut state, &run_dir, &args.common)
+}
+
+fn execute_and_report(
+    state: &mut crate::state::RunState,
+    run_dir: &Path,
+    args: &CommonArgs,
+) -> Result<()> {
+    run_workflow(state, run_dir, &to_runner_options(args))?;
+    let report = generate_report(state, run_dir)?;
+    println!("\nRun {}: {}", state.status, state.id);
+    println!("Report: {}", report.display());
+    Ok(())
+}
+
+fn status_command(cwd: &Path, run_id: Option<&str>) -> Result<()> {
+    let run_dir = resolve_run_dir(cwd, run_id)?;
+    let state = load_state(&run_dir)?;
+    println!("{}: {}", state.id, state.status);
+    for task in state.tasks.values() {
+        println!(
+            "  {}: {} ({} attempts)",
+            task.id, task.status, task.attempts
+        );
+    }
+    Ok(())
+}
+
+fn report_command(cwd: &Path, args: ReportArgs) -> Result<()> {
+    let run_dir = resolve_run_dir(cwd, args.run_id.as_deref())?;
+    let state = load_state(&run_dir)?;
+    let report = generate_report(&state, &run_dir)?;
+    if args.print {
+        print!("{}", fs::read_to_string(report)?);
+    } else {
+        println!("{}", report.display());
+    }
+    Ok(())
+}
+
+fn apply_command(cwd: &Path, args: ApplyArgs) -> Result<()> {
+    let run_dir = resolve_run_dir(cwd, args.run_id.as_deref())?;
+    let state = load_state(&run_dir)?;
+    let patches = state
+        .tasks
+        .values()
+        .filter_map(|task| {
+            task.patch_path
+                .as_ref()
+                .map(|path| (task.id.as_str(), run_dir.join(path)))
+        })
+        .collect::<Vec<_>>();
+    if patches.is_empty() {
+        println!("No patches found for this run.");
+        return Ok(());
+    }
+    println!("Patch files for {}:", state.id);
+    for (task_id, path) in &patches {
+        println!("- {task_id}: {}", path.display());
+    }
+    if !args.yes && !ask_yes("Apply these patches to the current workspace? [y/N] ")? {
+        println!("Aborted.");
+        return Ok(());
+    }
+    for (_, patch) in &patches {
+        apply_patch_file(cwd, patch, true)?;
+    }
+    for (task_id, patch) in &patches {
+        apply_patch_file(cwd, patch, false)?;
+        println!("Applied {task_id}");
+    }
+    Ok(())
+}
+
+fn create_plan(
+    cwd: &Path,
+    run_dir: &Path,
+    prompt: &str,
+    template: Option<&crate::templates::Template>,
+    args: &CommonArgs,
+) -> Result<WorkflowPlan> {
+    let schema_dir = run_dir.join("schemas");
+    write_json(
+        &schema_dir.join("workflow-plan.schema.json"),
+        &workflow_plan_schema(),
+    )?;
+    let planner_prompt = build_planner_prompt(prompt, template);
+    write_text(&run_dir.join("planner-prompt.md"), &planner_prompt)?;
+    let output_path = run_dir.join("plan.raw.json");
+    run_codex_exec(&CodexExec {
+        codex_bin: args.codex_bin.clone(),
+        cwd: cwd.to_path_buf(),
+        prompt: planner_prompt,
+        sandbox: "read-only".to_string(),
+        model: args.model.clone(),
+        output_file: Some(output_path.clone()),
+        schema_file: Some(schema_dir.join("workflow-plan.schema.json")),
+        log_file: Some(run_dir.join("planner.log")),
+        skip_git_repo_check: args.skip_git_repo_check,
+    })?;
+    let raw = fs::read_to_string(&output_path)?;
+    let plan = parse_json_object::<WorkflowPlan>(&raw, "workflow plan")?;
+    let plan = normalize_plan(plan, args.concurrency)?;
+    write_json(&run_dir.join("plan.json"), &plan)?;
+    Ok(plan)
+}
+
+fn build_planner_prompt(prompt: &str, template: Option<&crate::templates::Template>) -> String {
+    format!(
+        "You are the planner for Openflow, an open-source dynamic workflow runner for Codex.\n\n\
+Create a strict, executable workflow plan as JSON only. The plan will be validated and then executed by separate Codex CLI workers.\n\n\
+Planning rules:\n\
+- Break the work into independently useful tasks with explicit dependencies.\n\
+- Prefer read-only exploration and verification tasks unless the user clearly asks for code changes.\n\
+- Set writes=false for audit, research, review, and planning tasks.\n\
+- Set writes=true only when a worker must edit files.\n\
+- Keep each task prompt scoped enough for a fresh worker with no conversation history.\n\
+- Include verifier guidance so another worker can reject weak or unsupported results.\n\
+- Use stable kebab-case task ids.\n\n\
+Template guidance:\n{}\n\n\
+User request:\n{}\n\n\
+Return a JSON object matching the provided schema. Do not wrap it in markdown.\n",
+        template
+            .map(|template| template.content.as_str())
+            .unwrap_or("none"),
+        prompt
+    )
+}
+
+fn print_plan_summary(plan: &WorkflowPlan, run_id: &str) {
+    let summary = summarize_plan(plan);
+    println!("Run: {run_id}");
+    println!("Plan: {}", plan.name);
+    println!("Objective: {}", plan.objective);
+    println!(
+        "Tasks: {} ({} write tasks)",
+        summary.task_count, summary.write_tasks
+    );
+    println!("Verifier runs: {}", summary.estimated_verifier_runs);
+    println!("Concurrency: {}", plan.max_concurrency);
+    println!("Risk: {}", plan.risk_level);
+    println!();
+    for task in &plan.tasks {
+        let deps = if task.depends_on.is_empty() {
+            String::new()
+        } else {
+            format!(" after {}", task.depends_on.join(", "))
+        };
+        println!(
+            "- {}: {} [{}, {}]{}",
+            task.id,
+            task.title,
+            task.kind,
+            if task.writes { "writes" } else { "read-only" },
+            deps
+        );
+    }
+}
+
+fn confirm_plan(args: &CommonArgs, plan: &WorkflowPlan) -> Result<()> {
+    if args.yes {
+        return Ok(());
+    }
+    let writes = plan.tasks.iter().filter(|task| task.writes).count();
+    let prompt = if writes == 0 {
+        "Run this workflow now? [y/N] ".to_string()
+    } else {
+        format!(
+            "Run this workflow now? This plan includes {writes} write task(s) in isolated git worktrees. [y/N] "
+        )
+    };
+    if ask_yes(&prompt)? {
+        Ok(())
+    } else {
+        bail!("aborted before execution")
+    }
+}
+
+fn ask_yes(prompt: &str) -> Result<bool> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
+fn read_prompt(parts: &[String]) -> Result<String> {
+    let joined = parts.join(" ").trim().to_string();
+    if !joined.is_empty() {
+        return Ok(joined);
+    }
+    if !io::stdin().is_terminal() {
+        let mut prompt = String::new();
+        io::stdin().read_to_string(&mut prompt)?;
+        let prompt = prompt.trim().to_string();
+        if !prompt.is_empty() {
+            return Ok(prompt);
+        }
+    }
+    bail!("missing workflow prompt")
+}
+
+fn to_run_options(args: &CommonArgs) -> RunOptions {
+    RunOptions {
+        concurrency: args.concurrency,
+        model: args.model.clone(),
+        codex_bin: args.codex_bin.clone(),
+        skip_git_repo_check: args.skip_git_repo_check,
+    }
+}
+
+fn to_runner_options(args: &CommonArgs) -> RunnerOptions {
+    RunnerOptions {
+        concurrency: args.concurrency.clamp(1, 50),
+        max_retries: args.max_retries.clamp(0, 5),
+        model: args.model.clone(),
+        codex_bin: args.codex_bin.clone(),
+        skip_git_repo_check: args.skip_git_repo_check,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    #[test]
+    fn fake_codex_e2e_completes() {
+        let temp = TempDir::new().unwrap();
+        let fake = temp.path().join("fake-codex");
+        fs::write(
+            &fake,
+            r#"#!/bin/sh
+set -eu
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$arg"; break; fi
+  prev="$arg"
+done
+mkdir -p "$(dirname "$out")"
+case "$out" in
+  *plan.raw.json)
+    cat > "$out" <<'JSON'
+{"version":1,"name":"Fake audit","objective":"Exercise Openflow plumbing","riskLevel":"low","maxConcurrency":2,"tasks":[{"id":"inspect-repo","title":"Inspect repo","kind":"explore","prompt":"Return a fake result.","expectedOutput":"markdown","writes":false}],"verification":{"strategy":"independent","verifiersPerTask":1,"maxRetries":0,"prompt":"Pass fake results."}}
+JSON
+    ;;
+  *verifier-*.json)
+    cat > "$out" <<'JSON'
+{"status":"pass","summary":"Fake verifier accepted the result.","confidence":1,"acceptedFindings":["Fake finding"],"rejectedFindings":[],"requiredChanges":[]}
+JSON
+    ;;
+  *)
+    echo "Fake worker result with concrete evidence." > "$out"
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&fake).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake, perms).unwrap();
+
+        let args = CommonArgs {
+            template: Some("audit".to_string()),
+            concurrency: 2,
+            max_retries: 0,
+            model: None,
+            codex_bin: fake.display().to_string(),
+            skip_git_repo_check: true,
+            yes: true,
+        };
+        let cwd = temp.path();
+        let prompt = "workflow: fake audit".to_string();
+        let template = load_template(cwd, Some("audit")).unwrap();
+        let (mut state, run_dir) = create_empty_run(
+            cwd.to_path_buf(),
+            prompt.clone(),
+            Some("audit".to_string()),
+            to_run_options(&args),
+        )
+        .unwrap();
+        let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args).unwrap();
+        attach_plan(&mut state, plan);
+        save_state(&run_dir, &mut state).unwrap();
+        execute_and_report(&mut state, &run_dir, &args).unwrap();
+        let report = fs::read_to_string(run_dir.join("report.md")).unwrap();
+        assert!(report.contains("Fake worker result"));
+        assert!(report.contains("Fake verifier accepted"));
+    }
+}
