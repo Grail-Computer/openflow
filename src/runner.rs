@@ -6,7 +6,7 @@ use crate::util::{
     ensure_dir, now, parse_json_object, read_snippet, relative_to, write_json, write_text,
 };
 use crate::worktree::{capture_patch, prepare_task_workspace};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -69,12 +69,16 @@ pub fn run_workflow(state: &mut RunState, run_dir: &Path, options: &RunnerOption
         thread::scope(|scope| {
             let mut handles = Vec::new();
             for task in batch {
+                let task_id = task.id.clone();
                 let snapshot = state.clone();
                 let run_dir = run_dir.to_path_buf();
                 let options = options.clone();
-                handles.push(scope.spawn(move || execute_task(snapshot, run_dir, task, options)));
+                handles.push((
+                    task_id,
+                    scope.spawn(move || execute_task(snapshot, run_dir, task, options)),
+                ));
             }
-            for handle in handles {
+            for (task_id, handle) in handles {
                 match handle.join().expect("worker thread panicked") {
                     Ok(outcome) => {
                         println!("{} {}", outcome.task_state.status, outcome.task_id);
@@ -84,7 +88,11 @@ pub fn run_workflow(state: &mut RunState, run_dir: &Path, options: &RunnerOption
                         state.tasks.insert(outcome.task_id, outcome.task_state);
                     }
                     Err(error) => {
-                        failed = Some(format!("{error:#}"));
+                        let message = format!("{error:#}");
+                        println!("failed {task_id}");
+                        mark_task_failed(state, &task_id, message.clone());
+                        add_event(state, "task.failed", &message, Some(task_id));
+                        failed = Some(message);
                     }
                 }
             }
@@ -94,11 +102,19 @@ pub fn run_workflow(state: &mut RunState, run_dir: &Path, options: &RunnerOption
             state.status = "failed".to_string();
             add_event(state, "run.failed", &error, None);
             save_state(run_dir, state)?;
-            bail!(error);
+            return Ok(());
         }
     }
 
-    if state
+    if let Some(task) = state.tasks.values().find(|task| task.status == "failed") {
+        state.status = "failed".to_string();
+        add_event(
+            state,
+            "run.failed",
+            &format!("Task {} failed", task.id),
+            None,
+        );
+    } else if state
         .tasks
         .values()
         .all(|task| task.status == "completed" || task.status == "skipped")
@@ -111,6 +127,14 @@ pub fn run_workflow(state: &mut RunState, run_dir: &Path, options: &RunnerOption
     }
     save_state(run_dir, state)?;
     Ok(())
+}
+
+fn mark_task_failed(state: &mut RunState, task_id: &str, error: String) {
+    if let Some(task_state) = state.tasks.get_mut(task_id) {
+        task_state.status = "failed".to_string();
+        task_state.error = Some(error);
+        task_state.completed_at = Some(now());
+    }
 }
 
 pub fn ready_tasks(state: &RunState) -> Vec<Task> {
@@ -597,4 +621,149 @@ fn dedupe(values: Vec<String>) -> Vec<String> {
         .into_iter()
         .filter(|value| seen.insert(value.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::WorkflowPlan;
+    use crate::state::{RunOptions, attach_plan, create_empty_run, save_state};
+    use serde_json::json;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    #[test]
+    fn verifier_rejection_marks_task_and_run_failed() {
+        let temp = TempDir::new().unwrap();
+        let fake = executable_agent(
+            temp.path(),
+            r#"#!/bin/sh
+set -eu
+case "$OPENFLOW_OUTPUT_FILE" in
+  *verifier-*.json)
+    cat > "$OPENFLOW_OUTPUT_FILE" <<'JSON'
+{"status":"fail","summary":"The worker result is unsupported.","confidence":0.92,"acceptedFindings":[],"rejectedFindings":["Unsupported claim"],"requiredChanges":["Cite concrete evidence"]}
+JSON
+    ;;
+  *)
+    echo "Speculative worker result." > "$OPENFLOW_OUTPUT_FILE"
+    ;;
+esac
+"#,
+        );
+        let (mut state, run_dir) = prepared_run(&temp, true);
+        let options = runner_options(&fake);
+
+        run_workflow(&mut state, &run_dir, &options).unwrap();
+
+        let task = state.tasks.get("inspect").unwrap();
+        assert_eq!(state.status, "failed");
+        assert_eq!(task.status, "failed");
+        assert_eq!(task.attempts, 1);
+        assert!(
+            task.error
+                .as_deref()
+                .unwrap()
+                .contains("Verifier returned fail")
+        );
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event.kind == "run.failed" && event.message.contains("inspect"))
+        );
+    }
+
+    #[test]
+    fn worker_command_error_is_persisted_on_task() {
+        let temp = TempDir::new().unwrap();
+        let fake = executable_agent(
+            temp.path(),
+            r#"#!/bin/sh
+set -eu
+echo "worker exploded" >&2
+exit 42
+"#,
+        );
+        let (mut state, run_dir) = prepared_run(&temp, false);
+        let options = runner_options(&fake);
+
+        run_workflow(&mut state, &run_dir, &options).unwrap();
+
+        let task = state.tasks.get("inspect").unwrap();
+        assert_eq!(state.status, "failed");
+        assert_eq!(task.status, "failed");
+        assert!(task.error.as_deref().unwrap().contains("status 42"));
+        assert!(task.error.as_deref().unwrap().contains("worker exploded"));
+    }
+
+    fn prepared_run(temp: &TempDir, verify: bool) -> (RunState, PathBuf) {
+        let (mut state, run_dir) = create_empty_run(
+            temp.path().to_path_buf(),
+            "workflow: test failure semantics".to_string(),
+            None,
+            RunOptions {
+                concurrency: 1,
+                max_retries: 0,
+                model: None,
+                agent: "custom".to_string(),
+                agent_bin: "custom".to_string(),
+                agent_command: Some("fake".to_string()),
+                skip_git_repo_check: true,
+            },
+        )
+        .unwrap();
+        attach_plan(&mut state, one_task_plan(verify));
+        save_state(&run_dir, &mut state).unwrap();
+        (state, run_dir)
+    }
+
+    fn one_task_plan(verify: bool) -> WorkflowPlan {
+        serde_json::from_value(json!({
+            "version": 1,
+            "name": "Failure semantics",
+            "objective": "Exercise failed task handling",
+            "riskLevel": "low",
+            "maxConcurrency": 1,
+            "tasks": [{
+                "id": "inspect",
+                "title": "Inspect",
+                "kind": "explore",
+                "prompt": "Return a result.",
+                "expectedOutput": "markdown",
+                "writes": false,
+                "verify": verify
+            }],
+            "verification": {
+                "strategy": if verify { "independent" } else { "none" },
+                "verifiersPerTask": if verify { 1 } else { 0 },
+                "maxRetries": 0,
+                "prompt": "Reject unsupported results."
+            }
+        }))
+        .unwrap()
+    }
+
+    fn runner_options(fake: &Path) -> RunnerOptions {
+        RunnerOptions {
+            concurrency: 1,
+            max_retries: 0,
+            model: None,
+            agent: "custom".to_string(),
+            agent_bin: "custom".to_string(),
+            agent_command: Some(fake.display().to_string()),
+            skip_git_repo_check: true,
+        }
+    }
+
+    fn executable_agent(root: &Path, script: &str) -> PathBuf {
+        let path = root.join("fake-agent");
+        fs::write(&path, script).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
 }

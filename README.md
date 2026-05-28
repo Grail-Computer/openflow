@@ -264,6 +264,8 @@ built-in/CLI defaults -> workflow defaults -> task overrides
 7. Report phase: Openflow writes a deterministic `report.md`.
 8. Resume phase: every run persists to `.openflow/runs/<run-id>/state.json`.
 
+If a task fails or the workflow becomes blocked, Openflow still writes the report first and then exits nonzero.
+
 ## Run State
 
 Every run is inspectable:

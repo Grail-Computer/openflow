@@ -236,6 +236,9 @@ fn execute_and_report(
     let report = generate_report(state, run_dir)?;
     println!("\nRun {}: {}", state.status, state.id);
     println!("Report: {}", report.display());
+    if matches!(state.status.as_str(), "failed" | "blocked") {
+        bail!("workflow {}. See {}", state.status, report.display());
+    }
     Ok(())
 }
 
