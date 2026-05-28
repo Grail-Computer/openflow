@@ -346,6 +346,9 @@ Planning rules:\n\
 - Prefer read-only exploration and verification tasks unless the user clearly asks for code changes.\n\
 - Set writes=false for audit, research, review, and planning tasks.\n\
 - Set writes=true only when a worker must edit files.\n\
+- Keep the default UX simple: omit optional fields unless a task truly needs a different model, agent harness, sandbox, retry count, or verifier setup.\n\
+- Use workflow defaults for settings that should apply to many tasks, and task overrides only for exceptions.\n\
+- To use a different model for one step, set that task's model field.\n\
 - Keep each task prompt scoped enough for a fresh worker with no conversation history.\n\
 - Include verifier guidance so another worker can reject weak or unsupported results.\n\
 - Use stable kebab-case task ids.\n\n\
@@ -546,16 +549,14 @@ set -eu
 case "$OPENFLOW_OUTPUT_FILE" in
   *plan.raw.json)
     cat > "$OPENFLOW_OUTPUT_FILE" <<'JSON'
-{"version":1,"name":"Custom agent audit","objective":"Exercise custom harness plumbing","riskLevel":"low","maxConcurrency":2,"tasks":[{"id":"inspect-repo","title":"Inspect repo","kind":"explore","prompt":"Return a custom result.","expectedOutput":"markdown","writes":false}],"verification":{"strategy":"independent","verifiersPerTask":1,"maxRetries":0,"prompt":"Pass custom results."}}
+{"version":1,"name":"Custom agent audit","objective":"Exercise custom harness plumbing","riskLevel":"low","maxConcurrency":2,"defaults":{"model":"default-model"},"tasks":[{"id":"inspect-repo","title":"Inspect repo","kind":"explore","model":"worker-model","verifierModel":"verifier-model","prompt":"Return a custom result.","expectedOutput":"markdown","writes":false}],"verification":{"strategy":"independent","verifiersPerTask":1,"maxRetries":0,"prompt":"Pass custom results."}}
 JSON
     ;;
   *verifier-*.json)
-    cat > "$OPENFLOW_OUTPUT_FILE" <<'JSON'
-{"status":"pass","summary":"Custom verifier accepted the result.","confidence":1,"acceptedFindings":["Custom finding"],"rejectedFindings":[],"requiredChanges":[]}
-JSON
+    printf '{"status":"pass","summary":"Custom verifier accepted the result with model %s.","confidence":1,"acceptedFindings":["Custom finding"],"rejectedFindings":[],"requiredChanges":[]}\n' "$OPENFLOW_MODEL" > "$OPENFLOW_OUTPUT_FILE"
     ;;
   *)
-    echo "Custom worker result with concrete evidence." > "$OPENFLOW_OUTPUT_FILE"
+    echo "Custom worker result with model $OPENFLOW_MODEL and concrete evidence." > "$OPENFLOW_OUTPUT_FILE"
     ;;
 esac
 "#,
@@ -592,7 +593,7 @@ esac
         save_state(&run_dir, &mut state).unwrap();
         execute_and_report(&mut state, &run_dir, &args).unwrap();
         let report = fs::read_to_string(run_dir.join("report.md")).unwrap();
-        assert!(report.contains("Custom worker result"));
-        assert!(report.contains("Custom verifier accepted"));
+        assert!(report.contains("Custom worker result with model worker-model"));
+        assert!(report.contains("Custom verifier accepted the result with model verifier-model"));
     }
 }

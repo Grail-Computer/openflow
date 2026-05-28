@@ -29,6 +29,15 @@ struct TaskOutcome {
     events: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone)]
+struct StepAgentConfig {
+    agent: String,
+    agent_bin: String,
+    agent_command: Option<String>,
+    model: Option<String>,
+    sandbox: String,
+}
+
 pub fn run_workflow(state: &mut RunState, run_dir: &Path, options: &RunnerOptions) -> Result<()> {
     let plan = state.plan.clone().context("run has no plan")?;
     let normalized = normalize_plan(plan, options.concurrency)?;
@@ -137,11 +146,13 @@ fn execute_task(
         .with_context(|| format!("missing task state for {}", task.id))?;
     let mut events = Vec::new();
     let mut verifier_feedback = None;
-    let max_retries = state
-        .plan
-        .as_ref()
-        .map(|plan| plan.verification.max_retries)
-        .unwrap_or(options.max_retries);
+    let max_retries = task.max_retries.unwrap_or_else(|| {
+        state
+            .plan
+            .as_ref()
+            .map(|plan| plan.verification.max_retries)
+            .unwrap_or(options.max_retries)
+    });
 
     while task_state.attempts <= max_retries {
         task_state.attempts += 1;
@@ -163,21 +174,17 @@ fn execute_task(
         let result_path = attempt_dir.join("result.md");
         let prompt = build_worker_prompt(&state, &run_dir, &task, verifier_feedback.as_deref())?;
         write_text(&attempt_dir.join("prompt.md"), &prompt)?;
+        let worker_config = worker_agent_config(&state, &task, &options)?;
 
         run_agent_exec(&AgentExec {
-            agent: options.agent.clone(),
-            agent_bin: options.agent_bin.clone(),
-            agent_command: options.agent_command.clone(),
+            agent: worker_config.agent,
+            agent_bin: worker_config.agent_bin,
+            agent_command: worker_config.agent_command,
             cwd: task_workspace.clone(),
             prompt,
             prompt_file: Some(attempt_dir.join("prompt.md")),
-            sandbox: if task.writes {
-                "workspace-write"
-            } else {
-                "read-only"
-            }
-            .to_string(),
-            model: options.model.clone(),
+            sandbox: worker_config.sandbox,
+            model: worker_config.model,
             output_file: Some(result_path.clone()),
             schema_file: None,
             log_file: Some(attempt_dir.join("worker.log")),
@@ -260,10 +267,10 @@ fn maybe_verify_task(
     options: &RunnerOptions,
 ) -> Result<Option<VerifierResult>> {
     let plan = state.plan.as_ref().context("missing plan")?;
-    if !task.verify
-        || plan.verification.strategy == "none"
-        || plan.verification.verifiers_per_task == 0
-    {
+    let verifier_count = task
+        .verifiers_per_task
+        .unwrap_or(plan.verification.verifiers_per_task);
+    if !task.verify || plan.verification.strategy == "none" || verifier_count == 0 {
         return Ok(None);
     }
 
@@ -271,28 +278,23 @@ fn maybe_verify_task(
     write_json(&schema_path, &verifier_schema())?;
     let mut results = Vec::new();
 
-    for index in 0..plan.verification.verifiers_per_task {
-        let prompt = build_verifier_prompt(
-            state,
-            task,
-            result_path,
-            index + 1,
-            plan.verification.verifiers_per_task,
-        )?;
+    let verifier_config = verifier_agent_config(state, task, options)?;
+    for index in 0..verifier_count {
+        let prompt = build_verifier_prompt(state, task, result_path, index + 1, verifier_count)?;
         write_text(
             &attempt_dir.join(format!("verifier-{}-prompt.md", index + 1)),
             &prompt,
         )?;
         let output_path = attempt_dir.join(format!("verifier-{}.json", index + 1));
         run_agent_exec(&AgentExec {
-            agent: options.agent.clone(),
-            agent_bin: options.agent_bin.clone(),
-            agent_command: options.agent_command.clone(),
+            agent: verifier_config.agent.clone(),
+            agent_bin: verifier_config.agent_bin.clone(),
+            agent_command: verifier_config.agent_command.clone(),
             cwd: state.cwd.clone(),
             prompt,
             prompt_file: Some(attempt_dir.join(format!("verifier-{}-prompt.md", index + 1))),
-            sandbox: "read-only".to_string(),
-            model: options.model.clone(),
+            sandbox: verifier_config.sandbox.clone(),
+            model: verifier_config.model.clone(),
             output_file: Some(output_path.clone()),
             schema_file: Some(schema_path.clone()),
             log_file: Some(attempt_dir.join(format!("verifier-{}.log", index + 1))),
@@ -335,6 +337,7 @@ Workflow objective: {}\n\
 Task id: {}\n\
 Task title: {}\n\
 Task kind: {}\n\
+Task role: {}\n\
 Expected output: {}\n\
 Allowed to edit files: {}\n\
 Scope: {}\n\n\
@@ -346,6 +349,7 @@ Return only the task result. Cite concrete files, commands, and evidence when re
         task.id,
         task.title,
         task.kind,
+        task.role,
         task.expected_output,
         if task.writes { "yes" } else { "no" },
         if task.scope.is_empty() {
@@ -383,7 +387,9 @@ Task prompt: {}\n\n\
 Worker result:\n{}\n\n\
 Return JSON only with status, summary, confidence, acceptedFindings, rejectedFindings, and requiredChanges.\n",
         plan.objective,
-        plan.verification.prompt,
+        task.verification_prompt
+            .as_deref()
+            .unwrap_or(&plan.verification.prompt),
         task.id,
         task.title,
         task.prompt,
@@ -397,6 +403,140 @@ fn normalize_verifier(mut verifier: VerifierResult) -> VerifierResult {
     }
     verifier.confidence = verifier.confidence.clamp(0.0, 1.0);
     verifier
+}
+
+fn worker_agent_config(
+    state: &RunState,
+    task: &Task,
+    options: &RunnerOptions,
+) -> Result<StepAgentConfig> {
+    let plan = state.plan.as_ref().context("missing plan")?;
+    let agent = first_nonempty([
+        task.agent.as_deref(),
+        plan.defaults.agent.as_deref(),
+        Some(options.agent.as_str()),
+    ])
+    .unwrap_or("codex")
+    .to_string();
+    let fallback_agent_bin = default_agent_bin(&agent, options);
+    let agent_bin = first_nonempty([
+        task.agent_bin.as_deref(),
+        plan.defaults.agent_bin.as_deref(),
+        Some(fallback_agent_bin.as_str()),
+    ])
+    .unwrap_or("codex")
+    .to_string();
+    let agent_command = first_nonempty_owned([
+        task.agent_command.clone(),
+        plan.defaults.agent_command.clone(),
+        options.agent_command.clone(),
+    ]);
+    let model = first_nonempty_owned([
+        task.model.clone(),
+        plan.defaults.model.clone(),
+        options.model.clone(),
+    ]);
+    let sandbox = task
+        .sandbox
+        .clone()
+        .or_else(|| {
+            if task.writes {
+                plan.defaults.write_sandbox.clone()
+            } else {
+                plan.defaults.sandbox.clone()
+            }
+        })
+        .unwrap_or_else(|| {
+            if task.writes {
+                "workspace-write".to_string()
+            } else {
+                "read-only".to_string()
+            }
+        });
+    Ok(StepAgentConfig {
+        agent,
+        agent_bin,
+        agent_command,
+        model,
+        sandbox,
+    })
+}
+
+fn verifier_agent_config(
+    state: &RunState,
+    task: &Task,
+    options: &RunnerOptions,
+) -> Result<StepAgentConfig> {
+    let plan = state.plan.as_ref().context("missing plan")?;
+    let agent = first_nonempty([
+        task.verifier_agent.as_deref(),
+        plan.defaults.verifier_agent.as_deref(),
+        task.agent.as_deref(),
+        plan.defaults.agent.as_deref(),
+        Some(options.agent.as_str()),
+    ])
+    .unwrap_or("codex")
+    .to_string();
+    let fallback_agent_bin = default_agent_bin(&agent, options);
+    let agent_bin = first_nonempty([
+        task.verifier_agent_bin.as_deref(),
+        plan.defaults.verifier_agent_bin.as_deref(),
+        task.agent_bin.as_deref(),
+        plan.defaults.agent_bin.as_deref(),
+        Some(fallback_agent_bin.as_str()),
+    ])
+    .unwrap_or("codex")
+    .to_string();
+    let agent_command = first_nonempty_owned([
+        task.verifier_agent_command.clone(),
+        plan.defaults.verifier_agent_command.clone(),
+        task.agent_command.clone(),
+        plan.defaults.agent_command.clone(),
+        options.agent_command.clone(),
+    ]);
+    let model = first_nonempty_owned([
+        task.verifier_model.clone(),
+        plan.defaults.verifier_model.clone(),
+        task.model.clone(),
+        plan.defaults.model.clone(),
+        options.model.clone(),
+    ]);
+    let sandbox = task
+        .verifier_sandbox
+        .clone()
+        .or_else(|| plan.defaults.verifier_sandbox.clone())
+        .unwrap_or_else(|| "read-only".to_string());
+    Ok(StepAgentConfig {
+        agent,
+        agent_bin,
+        agent_command,
+        model,
+        sandbox,
+    })
+}
+
+fn first_nonempty<const N: usize>(values: [Option<&str>; N]) -> Option<&str> {
+    values
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+}
+
+fn first_nonempty_owned<const N: usize>(values: [Option<String>; N]) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn default_agent_bin(agent: &str, options: &RunnerOptions) -> String {
+    if agent == options.agent {
+        options.agent_bin.clone()
+    } else {
+        agent.to_string()
+    }
 }
 
 fn aggregate_verifiers(results: Vec<VerifierResult>) -> VerifierResult {

@@ -79,7 +79,12 @@ pub fn generate_report(state: &RunState, run_dir: &Path) -> Result<PathBuf> {
             lines.push(format!("### {}: {}", task.id, task.title));
             lines.push(String::new());
             lines.push(format!("Kind: `{}`", task.kind));
+            lines.push(format!("Role: `{}`", task.role));
             lines.push(format!("Writes: `{}`", task.writes));
+            let overrides = task_overrides(task);
+            if !overrides.is_empty() {
+                lines.push(format!("Overrides: {}", overrides.join(", ")));
+            }
             if !task.scope.is_empty() {
                 lines.push(format!(
                     "Scope: {}",
@@ -121,4 +126,36 @@ pub fn generate_report(state: &RunState, run_dir: &Path) -> Result<PathBuf> {
     let report_path = run_dir.join("report.md");
     write_text(&report_path, &format!("{}\n", lines.join("\n").trim()))?;
     Ok(report_path)
+}
+
+fn task_overrides(task: &crate::plan::Task) -> Vec<String> {
+    let mut overrides = Vec::new();
+    if let Some(value) = &task.agent {
+        overrides.push(format!("agent=`{value}`"));
+    }
+    if let Some(value) = &task.agent_bin {
+        overrides.push(format!("agentBin=`{value}`"));
+    }
+    if task.agent_command.is_some() {
+        overrides.push("agentCommand=`<set>`".to_string());
+    }
+    if let Some(value) = &task.model {
+        overrides.push(format!("model=`{value}`"));
+    }
+    if let Some(value) = &task.sandbox {
+        overrides.push(format!("sandbox=`{value}`"));
+    }
+    if let Some(value) = task.max_retries {
+        overrides.push(format!("maxRetries=`{value}`"));
+    }
+    if let Some(value) = task.verifiers_per_task {
+        overrides.push(format!("verifiersPerTask=`{value}`"));
+    }
+    if let Some(value) = &task.verifier_model {
+        overrides.push(format!("verifierModel=`{value}`"));
+    }
+    if let Some(value) = &task.verifier_agent {
+        overrides.push(format!("verifierAgent=`{value}`"));
+    }
+    overrides
 }

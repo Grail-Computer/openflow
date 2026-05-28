@@ -23,6 +23,8 @@ For read-heavy audits or reviews, run a single command:
 openflow run "workflow: <user request>" --template audit --concurrency 6
 ```
 
+Keep this path simple. Do not add model, harness, sandbox, retry, or verifier flags unless the user asked for them or the workflow clearly requires them.
+
 For a custom harness, pass the command template:
 
 ```bash
@@ -55,14 +57,48 @@ openflow report --print
 - If the harness can write to a file, include `{output_file}`. If it only prints to stdout, Openflow will capture stdout.
 - If the harness supports structured output or schemas, pass `{schema_file}`.
 
+## Per-Step Customization
+
+Openflow plans support workflow defaults and task-level overrides. Use them when the user wants different models, harnesses, sandboxes, verifier counts, or retry behavior for specific steps.
+
+Workflow-level defaults go in `defaults`:
+
+```json
+{
+  "defaults": {
+    "model": "gpt-5",
+    "agent": "codex",
+    "sandbox": "read-only",
+    "writeSandbox": "workspace-write",
+    "verifierModel": "gpt-5"
+  }
+}
+```
+
+Task-level overrides go on the task:
+
+```json
+{
+  "id": "audit-auth-boundaries",
+  "role": "security-reviewer",
+  "model": "gpt-5-high",
+  "verifiersPerTask": 2,
+  "verifierModel": "gpt-5",
+  "maxRetries": 2
+}
+```
+
+Precedence is built-in/CLI defaults, then workflow defaults, then task overrides.
+
 ## Operating Rules
 
 1. Prefer read-only workflows unless the user clearly wants code changes.
 2. Use `openflow plan` first when a workflow includes write tasks, expensive scope, or uncertain blast radius.
-3. Read `openflow status` before resuming a run.
-4. Use `openflow report --print` to summarize results back to the user.
-5. Do not apply patches automatically unless the user asked for that. If applying, run `openflow apply` and report what changed.
-6. If a run fails, inspect `.openflow/runs/<run-id>/planner.log`, task `worker.log`, and verifier logs before retrying.
+3. If the user wants per-step customization, edit `.openflow/runs/<run-id>/plan.json` before approval/resume.
+4. Read `openflow status` before resuming a run.
+5. Use `openflow report --print` to summarize results back to the user.
+6. Do not apply patches automatically unless the user asked for that. If applying, run `openflow apply` and report what changed.
+7. If a run fails, inspect `.openflow/runs/<run-id>/planner.log`, task `worker.log`, and verifier logs before retrying.
 
 ## Output Contract
 

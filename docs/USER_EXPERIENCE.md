@@ -75,6 +75,49 @@ Expected result:
 - workers launched through the selected harness
 - run state still under `.openflow/runs/<run-id>/`
 
+### Deeper Editing
+
+The default UX should stay one command. Deeper customization should happen by editing the generated plan:
+
+```bash
+openflow plan "workflow: audit this repo with a stronger model for security-critical steps"
+$EDITOR .openflow/runs/<run-id>/plan.json
+openflow approve <run-id>
+openflow resume <run-id>
+```
+
+Users can set workflow defaults once:
+
+```json
+{
+  "defaults": {
+    "model": "fast-default-model",
+    "verifierModel": "strong-verifier-model",
+    "sandbox": "read-only",
+    "writeSandbox": "workspace-write"
+  }
+}
+```
+
+Then override only the special steps:
+
+```json
+{
+  "id": "audit-payment-permissions",
+  "role": "security-reviewer",
+  "model": "strong-reasoning-model",
+  "verifiersPerTask": 2,
+  "verifierModel": "strong-verifier-model",
+  "maxRetries": 2
+}
+```
+
+This is the intended UX principle:
+
+- Simple by default.
+- Fully editable when users want control.
+- Same state files and reports either way.
+
 ### Migration
 
 ```bash
@@ -128,6 +171,7 @@ Openflow should make the invisible orchestration visible:
 - task ids and dependencies
 - read/write flags
 - verifier count
+- model and harness overrides
 - run id
 - report path
 - patch paths

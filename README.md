@@ -177,6 +177,82 @@ Examples:
 --agent-command 'my-agent run --prompt-file {prompt_file} --schema {schema_file} --output {output_file}'
 ```
 
+## Defaults And Per-Step Overrides
+
+Openflow is designed to be simple first:
+
+```bash
+openflow run "workflow: audit this repo for auth bugs"
+```
+
+If you do nothing else, every planner, worker, and verifier uses the same runtime defaults from the CLI. Today that means the Codex preset, read-only sandboxes for read tasks, workspace-write sandboxes for write tasks, one verifier, and one retry.
+
+When you want more control, edit the generated plan:
+
+```bash
+openflow plan "workflow: audit this repo and use a stronger model for security review"
+$EDITOR .openflow/runs/<run-id>/plan.json
+openflow approve <run-id>
+openflow resume <run-id>
+```
+
+Plan-level defaults apply to every task unless a task overrides them:
+
+```json
+{
+  "defaults": {
+    "agent": "codex",
+    "agentBin": "codex",
+    "model": "gpt-5",
+    "sandbox": "read-only",
+    "writeSandbox": "workspace-write",
+    "verifierModel": "gpt-5"
+  }
+}
+```
+
+Each task can override the runtime without changing the rest of the workflow:
+
+```json
+{
+  "id": "audit-auth-boundaries",
+  "title": "Audit auth boundaries",
+  "kind": "explore",
+  "role": "security-reviewer",
+  "model": "gpt-5-high",
+  "sandbox": "read-only",
+  "verifiersPerTask": 2,
+  "verifierModel": "gpt-5",
+  "maxRetries": 2,
+  "prompt": "Inspect auth and tenant isolation boundaries."
+}
+```
+
+Per-task fields:
+
+```text
+role                    human-readable worker role
+agent                   harness preset/name override
+agentBin                executable override for built-in presets
+agentCommand            custom command template override
+model                   model override for this worker
+sandbox                 read-only, workspace-write, or danger-full-access
+maxRetries              retry limit for this task
+verifiersPerTask        verifier count for this task
+verificationPrompt      verifier instructions for this task
+verifierAgent           verifier harness override
+verifierAgentBin        verifier executable override
+verifierAgentCommand    verifier command template override
+verifierModel           verifier model override
+verifierSandbox         verifier sandbox override
+```
+
+Precedence is:
+
+```text
+built-in/CLI defaults -> workflow defaults -> task overrides
+```
+
 ## How It Works
 
 1. Planner phase: Openflow asks the selected agent harness for a strict JSON workflow plan in a read-only sandbox.
