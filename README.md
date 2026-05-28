@@ -1,10 +1,10 @@
 # Openflow
 
-Open-source dynamic workflow orchestration for Codex CLI.
+Open-source dynamic workflow orchestration for CLI agent harnesses.
 
-Openflow turns one broad request into a validated workflow DAG, runs Codex workers in parallel, verifies results independently, and saves the whole run as ordinary files so it can be inspected, resumed, and shared.
+Openflow turns one broad request into a validated workflow DAG, runs agent workers in parallel, verifies results independently, and saves the whole run as ordinary files so it can be inspected, resumed, and shared.
 
-It is written in Rust and intentionally stays close to Codex itself: Openflow does not replace Codex. It orchestrates `codex exec`.
+It is written in Rust. Codex is the default built-in runner, but Openflow is not Codex-specific. Any agent harness that can run non-interactively from the CLI can be plugged in.
 
 ## Why
 
@@ -23,7 +23,7 @@ Openflow adds that missing orchestration layer.
 Prerequisites:
 
 - Rust toolchain
-- Codex CLI installed and authenticated
+- A CLI agent harness installed and authenticated. Codex works out of the box.
 - Git for patch/worktree workflows
 
 Install from GitHub:
@@ -53,6 +53,26 @@ Run a read-only audit:
 ```bash
 cd your-repo
 openflow run "workflow: audit this repo for auth and permission bugs" --template audit --concurrency 8
+```
+
+This uses the built-in Codex preset, equivalent to running `codex exec` workers under Openflow's planner/verifier orchestration.
+
+Use another agent harness:
+
+```bash
+openflow run "workflow: audit this repo for auth and permission bugs" \
+  --template audit \
+  --agent kimi-k2 \
+  --agent-command 'kimi-k2-cli run --prompt-file {prompt_file} --output {output_file}' \
+  --concurrency 8
+```
+
+If your harness writes the final answer to stdout, Openflow will capture stdout into the expected output file:
+
+```bash
+openflow run "workflow: review this repo for risky changes" \
+  --agent my-agent \
+  --agent-command 'my-agent --prompt-file {prompt_file}'
 ```
 
 Safer staged flow:
@@ -96,19 +116,72 @@ Useful options:
 
 ```bash
 --template <name>          audit, migration, pr-review
---concurrency <n>          max concurrent Codex workers
+--concurrency <n>          max concurrent agent workers
 --max-retries <n>          verifier-driven retries per task
---model <model>            passed to codex exec
---codex-bin <path>         alternate Codex executable
---skip-git-repo-check      passed to codex exec
+--model <model>            passed to the selected agent preset/harness
+--agent <name>             agent preset/name, default: codex
+--agent-bin <path>         executable for built-in presets, default: codex
+--agent-command <template> custom shell command for any harness
+--skip-git-repo-check      passed to the Codex preset
 --yes                      skip approval prompt
+```
+
+## Agent Harness Contract
+
+Openflow has one built-in preset today:
+
+```bash
+--agent codex --agent-bin codex
+```
+
+For everything else, use `--agent-command`.
+
+The command runs once per planner, worker, and verifier task. Openflow provides these shell-quoted placeholders:
+
+```text
+{prompt}        full prompt text
+{prompt_file}   path to a file containing the prompt
+{output_file}   path where the agent should write its final answer
+{schema_file}   JSON schema path when Openflow expects structured JSON
+{sandbox}       read-only or workspace-write
+{cwd}           working directory
+{model}         model value passed with --model, if any
+{agent}         agent name
+{agent_bin}     agent binary path/name
+```
+
+Openflow also sets environment variables for custom commands:
+
+```text
+OPENFLOW_AGENT
+OPENFLOW_PROMPT
+OPENFLOW_PROMPT_FILE
+OPENFLOW_OUTPUT_FILE
+OPENFLOW_SCHEMA_FILE
+OPENFLOW_SANDBOX
+OPENFLOW_MODEL
+```
+
+The harness must return the final agent response either by writing `{output_file}` or by printing to stdout. Planner and verifier calls must return JSON because Openflow validates and consumes those outputs.
+
+Examples:
+
+```bash
+# Prompt file + explicit output file
+--agent-command 'my-agent run --prompt-file {prompt_file} --output {output_file}'
+
+# Stdout capture
+--agent-command 'my-agent run --prompt-file {prompt_file}'
+
+# Harness that supports schema guidance
+--agent-command 'my-agent run --prompt-file {prompt_file} --schema {schema_file} --output {output_file}'
 ```
 
 ## How It Works
 
-1. Planner phase: Openflow asks `codex exec` for a strict JSON workflow plan in a read-only sandbox.
+1. Planner phase: Openflow asks the selected agent harness for a strict JSON workflow plan in a read-only sandbox.
 2. Validation phase: Openflow validates task ids, dependencies, write flags, task kinds, and dependency cycles.
-3. Execution phase: ready tasks run concurrently as separate `codex exec` workers.
+3. Execution phase: ready tasks run concurrently as separate agent workers.
 4. Isolation phase: write tasks run in per-task git worktrees.
 5. Verification phase: independent verifier workers accept, reject, or request revision.
 6. Retry phase: verifier feedback is sent back into the worker up to `--max-retries`.
@@ -144,13 +217,13 @@ No hidden service. No opaque database. No background daemon.
 
 ## Safety Model
 
-Read-only tasks run through:
+With the default Codex preset, read-only tasks run through:
 
 ```bash
 codex exec --sandbox read-only
 ```
 
-Write tasks run through:
+With the default Codex preset, write tasks run through:
 
 ```bash
 codex exec --sandbox workspace-write
@@ -188,11 +261,11 @@ The planner might create tasks like:
 - `review-test-coverage`
 - `synthesize-risk-report`
 
-Each task gets its own Codex worker prompt. Each result is checked by a verifier before it lands in the final report.
+Each task gets its own worker prompt. Each result is checked by a verifier before it lands in the final report.
 
-## Codex Skill
+## Agent Skill
 
-This repo includes an optional Codex skill at [skills/openflow/SKILL.md](skills/openflow/SKILL.md).
+This repo includes an optional Codex skill at [skills/openflow/SKILL.md](skills/openflow/SKILL.md). It teaches Codex how to call Openflow, including custom agent harnesses.
 
 Install it into your Codex skills folder:
 
@@ -208,6 +281,12 @@ Then ask Codex for a workflow:
 Use Openflow to run a workflow that audits this repo for auth bugs.
 ```
 
+Or:
+
+```text
+Use Openflow with this harness command: kimi-k2-cli run --prompt-file {prompt_file} --output {output_file}. Run a workflow that audits this repo for auth bugs.
+```
+
 ## Docs
 
 - [Full user experience map](docs/USER_EXPERIENCE.md)
@@ -218,7 +297,7 @@ Use Openflow to run a workflow that audits this repo for auth bugs.
 
 - Openflow is strongest today for read-heavy audit, review, and migration planning workflows.
 - Write workflows produce patch queues; conflict resolution is still manual.
-- It shells out to `codex exec`, so your Codex auth, sandboxing, and rate limits apply.
+- It shells out to your selected agent harness, so that harness's auth, sandboxing, and rate limits apply.
 - Very large workflows can spend a lot of tokens. Start scoped.
 
 ## Development
@@ -229,17 +308,18 @@ cargo test
 cargo clippy --all-targets --all-features
 ```
 
-The test suite includes a fake Codex executable path so the planner, runner, verifier, state, and report plumbing can be tested without spending Codex tokens.
+The test suite includes fake built-in and custom agent harnesses so the planner, runner, verifier, state, and report plumbing can be tested without spending real agent tokens.
 
 ## Roadmap
 
 - Live terminal DAG view
 - GitHub Action mode that uploads reports and patch artifacts
-- Native JSONL event ingestion from `codex exec --json`
+- More built-in presets for other agent harnesses
+- Native JSONL event ingestion for harnesses that support event streams
 - Better patch merge and conflict handling
 - Shared workflow template registry
 - Machine-readable final report mode
 
 ## Positioning
 
-Claude popularized "dynamic workflows" for agent-written orchestration. Openflow is the transparent, hackable, open-source version for Codex users.
+Claude popularized "dynamic workflows" for agent-written orchestration. Openflow is the transparent, hackable, open-source version for any CLI agent harness, with Codex supported out of the box.

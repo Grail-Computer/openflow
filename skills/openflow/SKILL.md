@@ -1,6 +1,6 @@
 ---
 name: openflow
-description: Use Openflow to plan, run, verify, resume, and report dynamic Codex workflows when a user asks for a workflow, parallel agents, multi-stage audit, migration, review, or verified fan-out/fan-in task.
+description: Use Openflow to plan, run, verify, resume, and report dynamic workflows with Codex or any non-interactive CLI agent harness when a user asks for a workflow, parallel agents, multi-stage audit, migration, review, or verified fan-out/fan-in task.
 ---
 
 # Openflow
@@ -10,9 +10,10 @@ description: Use Openflow to plan, run, verify, resume, and report dynamic Codex
 ## Preconditions
 
 1. Check that `openflow` is installed with `openflow --help`.
-2. Check that Codex CLI is installed and authenticated with `codex --version`.
-3. Work from the target repository root.
-4. For write workflows, make sure the repo is a git repository and inspect `git status --short` before running.
+2. Identify the target harness. Use the default Codex preset unless the user provides another harness command.
+3. For the Codex preset, check `codex --version`. For a custom harness, check the binary or command the user gave.
+4. Work from the target repository root.
+5. For write workflows, make sure the repo is a git repository and inspect `git status --short` before running.
 
 ## Default UX
 
@@ -20,6 +21,15 @@ For read-heavy audits or reviews, run a single command:
 
 ```bash
 openflow run "workflow: <user request>" --template audit --concurrency 6
+```
+
+For a custom harness, pass the command template:
+
+```bash
+openflow run "workflow: <user request>" \
+  --template audit \
+  --agent custom \
+  --agent-command '<agent command using {prompt_file} and optionally {output_file}>'
 ```
 
 For implementation or migration work, use the staged approval flow:
@@ -37,6 +47,14 @@ openflow report --print
 - Use `--template pr-review` for branch, diff, pull request, or uncommitted-change review.
 - Use `--template migration` for dependency, framework, API, architecture, or code movement tasks.
 
+## Harness Selection
+
+- Use the default Codex preset when the user does not specify a harness.
+- Use `--agent <name> --agent-command '<template>'` when the user gives a Kimi/K2, Claude, Aider, local model, or other CLI harness.
+- Prefer `{prompt_file}` over `{prompt}` for custom harnesses because workflow prompts can be long.
+- If the harness can write to a file, include `{output_file}`. If it only prints to stdout, Openflow will capture stdout.
+- If the harness supports structured output or schemas, pass `{schema_file}`.
+
 ## Operating Rules
 
 1. Prefer read-only workflows unless the user clearly wants code changes.
@@ -53,6 +71,7 @@ When reporting back to the user, include:
 - run id
 - final status
 - report path
+- selected harness or `--agent-command`
 - high-signal findings or changed files
 - whether patches were only generated or actually applied
 - verification command results, if any

@@ -2,11 +2,11 @@
 name = "openflow"
 version = "0.1.0"
 edition = "2024"
-description = "Open-source dynamic workflow orchestration for Codex CLI."
+description = "Open-source dynamic workflow orchestration for CLI agent harnesses."
 license = "MIT"
 repository = "https://github.com/Grail-Computer/openflow"
 readme = "README.md"
-keywords = ["codex", "agents", "workflow", "orchestration", "cli"]
+keywords = ["agents", "workflow", "orchestration", "cli", "automation"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]

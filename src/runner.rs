@@ -1,4 +1,4 @@
-use crate::codex::{CodexExec, run_codex_exec};
+use crate::agent::{AgentExec, run_agent_exec};
 use crate::plan::{Task, normalize_plan};
 use crate::schema::verifier_schema;
 use crate::state::{RunState, TaskState, VerifierResult, add_event, save_state};
@@ -16,7 +16,9 @@ pub struct RunnerOptions {
     pub concurrency: usize,
     pub max_retries: usize,
     pub model: Option<String>,
-    pub codex_bin: String,
+    pub agent: String,
+    pub agent_bin: String,
+    pub agent_command: Option<String>,
     pub skip_git_repo_check: bool,
 }
 
@@ -162,10 +164,13 @@ fn execute_task(
         let prompt = build_worker_prompt(&state, &run_dir, &task, verifier_feedback.as_deref())?;
         write_text(&attempt_dir.join("prompt.md"), &prompt)?;
 
-        run_codex_exec(&CodexExec {
-            codex_bin: options.codex_bin.clone(),
+        run_agent_exec(&AgentExec {
+            agent: options.agent.clone(),
+            agent_bin: options.agent_bin.clone(),
+            agent_command: options.agent_command.clone(),
             cwd: task_workspace.clone(),
             prompt,
+            prompt_file: Some(attempt_dir.join("prompt.md")),
             sandbox: if task.writes {
                 "workspace-write"
             } else {
@@ -279,10 +284,13 @@ fn maybe_verify_task(
             &prompt,
         )?;
         let output_path = attempt_dir.join(format!("verifier-{}.json", index + 1));
-        run_codex_exec(&CodexExec {
-            codex_bin: options.codex_bin.clone(),
+        run_agent_exec(&AgentExec {
+            agent: options.agent.clone(),
+            agent_bin: options.agent_bin.clone(),
+            agent_command: options.agent_command.clone(),
             cwd: state.cwd.clone(),
             prompt,
+            prompt_file: Some(attempt_dir.join(format!("verifier-{}-prompt.md", index + 1))),
             sandbox: "read-only".to_string(),
             model: options.model.clone(),
             output_file: Some(output_path.clone()),
@@ -322,7 +330,7 @@ fn build_worker_prompt(
     }
 
     Ok(format!(
-        "You are a Codex worker in an Openflow dynamic workflow.\n\n\
+        "You are an agent worker in an Openflow dynamic workflow.\n\n\
 Workflow objective: {}\n\
 Task id: {}\n\
 Task title: {}\n\

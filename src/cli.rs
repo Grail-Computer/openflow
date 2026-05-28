@@ -1,4 +1,4 @@
-use crate::codex::{CodexExec, run_codex_exec};
+use crate::agent::{AgentExec, run_agent_exec};
 use crate::plan::{WorkflowPlan, normalize_plan, summarize_plan};
 use crate::report::generate_report;
 use crate::runner::{RunnerOptions, run_workflow};
@@ -17,7 +17,7 @@ use std::path::Path;
 
 #[derive(Parser)]
 #[command(name = "openflow")]
-#[command(about = "Open-source dynamic workflow orchestration for Codex CLI.")]
+#[command(about = "Open-source dynamic workflow orchestration for CLI agent harnesses.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -80,16 +80,26 @@ struct RunIdArg {
 
 #[derive(Debug, Clone, Args)]
 struct CommonArgs {
-    #[arg(long)]
+    #[arg(long, help = "Workflow template: audit, migration, or pr-review")]
     template: Option<String>,
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 4, help = "Maximum concurrent agent workers")]
     concurrency: usize,
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, help = "Verifier-driven retries per task")]
     max_retries: usize,
-    #[arg(long)]
+    #[arg(long, help = "Model name passed through to the selected harness")]
     model: Option<String>,
-    #[arg(long, default_value = "codex")]
-    codex_bin: String,
+    #[arg(long, default_value = "codex", help = "Agent preset/name")]
+    agent: String,
+    #[arg(
+        long,
+        default_value = "codex",
+        help = "Executable for built-in presets"
+    )]
+    agent_bin: String,
+    #[arg(long, help = "Custom shell command template for any harness")]
+    agent_command: Option<String>,
+    #[arg(long, hide = true)]
+    codex_bin: Option<String>,
     #[arg(long)]
     skip_git_repo_check: bool,
     #[arg(long)]
@@ -306,10 +316,13 @@ fn create_plan(
     let planner_prompt = build_planner_prompt(prompt, template);
     write_text(&run_dir.join("planner-prompt.md"), &planner_prompt)?;
     let output_path = run_dir.join("plan.raw.json");
-    run_codex_exec(&CodexExec {
-        codex_bin: args.codex_bin.clone(),
+    run_agent_exec(&AgentExec {
+        agent: args.agent.clone(),
+        agent_bin: effective_agent_bin(args),
+        agent_command: args.agent_command.clone(),
         cwd: cwd.to_path_buf(),
         prompt: planner_prompt,
+        prompt_file: Some(run_dir.join("planner-prompt.md")),
         sandbox: "read-only".to_string(),
         model: args.model.clone(),
         output_file: Some(output_path.clone()),
@@ -326,8 +339,8 @@ fn create_plan(
 
 fn build_planner_prompt(prompt: &str, template: Option<&crate::templates::Template>) -> String {
     format!(
-        "You are the planner for Openflow, an open-source dynamic workflow runner for Codex.\n\n\
-Create a strict, executable workflow plan as JSON only. The plan will be validated and then executed by separate Codex CLI workers.\n\n\
+        "You are the planner for Openflow, an open-source dynamic workflow runner for CLI agent harnesses.\n\n\
+Create a strict, executable workflow plan as JSON only. The plan will be validated and then executed by separate agent workers.\n\n\
 Planning rules:\n\
 - Break the work into independently useful tasks with explicit dependencies.\n\
 - Prefer read-only exploration and verification tasks unless the user clearly asks for code changes.\n\
@@ -423,7 +436,9 @@ fn to_run_options(args: &CommonArgs) -> RunOptions {
     RunOptions {
         concurrency: args.concurrency,
         model: args.model.clone(),
-        codex_bin: args.codex_bin.clone(),
+        agent: args.agent.clone(),
+        agent_bin: effective_agent_bin(args),
+        agent_command: args.agent_command.clone(),
         skip_git_repo_check: args.skip_git_repo_check,
     }
 }
@@ -433,9 +448,17 @@ fn to_runner_options(args: &CommonArgs) -> RunnerOptions {
         concurrency: args.concurrency.clamp(1, 50),
         max_retries: args.max_retries.clamp(0, 5),
         model: args.model.clone(),
-        codex_bin: args.codex_bin.clone(),
+        agent: args.agent.clone(),
+        agent_bin: effective_agent_bin(args),
+        agent_command: args.agent_command.clone(),
         skip_git_repo_check: args.skip_git_repo_check,
     }
+}
+
+fn effective_agent_bin(args: &CommonArgs) -> String {
+    args.codex_bin
+        .clone()
+        .unwrap_or_else(|| args.agent_bin.clone())
 }
 
 #[cfg(test)]
@@ -445,9 +468,9 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn fake_codex_e2e_completes() {
+    fn fake_agent_e2e_completes() {
         let temp = TempDir::new().unwrap();
-        let fake = temp.path().join("fake-codex");
+        let fake = temp.path().join("fake-agent");
         fs::write(
             &fake,
             r#"#!/bin/sh
@@ -486,7 +509,10 @@ esac
             concurrency: 2,
             max_retries: 0,
             model: None,
-            codex_bin: fake.display().to_string(),
+            agent: "codex".to_string(),
+            agent_bin: fake.display().to_string(),
+            agent_command: None,
+            codex_bin: None,
             skip_git_repo_check: true,
             yes: true,
         };
@@ -507,5 +533,66 @@ esac
         let report = fs::read_to_string(run_dir.join("report.md")).unwrap();
         assert!(report.contains("Fake worker result"));
         assert!(report.contains("Fake verifier accepted"));
+    }
+
+    #[test]
+    fn custom_agent_command_e2e_completes() {
+        let temp = TempDir::new().unwrap();
+        let fake = temp.path().join("custom-agent");
+        fs::write(
+            &fake,
+            r#"#!/bin/sh
+set -eu
+case "$OPENFLOW_OUTPUT_FILE" in
+  *plan.raw.json)
+    cat > "$OPENFLOW_OUTPUT_FILE" <<'JSON'
+{"version":1,"name":"Custom agent audit","objective":"Exercise custom harness plumbing","riskLevel":"low","maxConcurrency":2,"tasks":[{"id":"inspect-repo","title":"Inspect repo","kind":"explore","prompt":"Return a custom result.","expectedOutput":"markdown","writes":false}],"verification":{"strategy":"independent","verifiersPerTask":1,"maxRetries":0,"prompt":"Pass custom results."}}
+JSON
+    ;;
+  *verifier-*.json)
+    cat > "$OPENFLOW_OUTPUT_FILE" <<'JSON'
+{"status":"pass","summary":"Custom verifier accepted the result.","confidence":1,"acceptedFindings":["Custom finding"],"rejectedFindings":[],"requiredChanges":[]}
+JSON
+    ;;
+  *)
+    echo "Custom worker result with concrete evidence." > "$OPENFLOW_OUTPUT_FILE"
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&fake).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake, perms).unwrap();
+
+        let args = CommonArgs {
+            template: Some("audit".to_string()),
+            concurrency: 2,
+            max_retries: 0,
+            model: None,
+            agent: "custom".to_string(),
+            agent_bin: "custom".to_string(),
+            agent_command: Some(format!("{}", fake.display())),
+            codex_bin: None,
+            skip_git_repo_check: true,
+            yes: true,
+        };
+        let cwd = temp.path();
+        let prompt = "workflow: fake custom audit".to_string();
+        let template = load_template(cwd, Some("audit")).unwrap();
+        let (mut state, run_dir) = create_empty_run(
+            cwd.to_path_buf(),
+            prompt.clone(),
+            Some("audit".to_string()),
+            to_run_options(&args),
+        )
+        .unwrap();
+        let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args).unwrap();
+        attach_plan(&mut state, plan);
+        save_state(&run_dir, &mut state).unwrap();
+        execute_and_report(&mut state, &run_dir, &args).unwrap();
+        let report = fs::read_to_string(run_dir.join("report.md")).unwrap();
+        assert!(report.contains("Custom worker result"));
+        assert!(report.contains("Custom verifier accepted"));
     }
 }

@@ -30,7 +30,9 @@ pub struct RunState {
 pub struct RunOptions {
     pub concurrency: usize,
     pub model: Option<String>,
-    pub codex_bin: String,
+    pub agent: String,
+    pub agent_bin: String,
+    pub agent_command: Option<String>,
     pub skip_git_repo_check: bool,
 }
 

@@ -1,5 +1,5 @@
+mod agent;
 mod cli;
-mod codex;
 mod plan;
 mod report;
 mod runner;

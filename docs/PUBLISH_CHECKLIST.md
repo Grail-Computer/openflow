@@ -26,8 +26,8 @@ Expected result: no real secrets. Documentation may mention placeholder variable
 - Repository: `Grail-Computer/openflow`
 - Visibility: public
 - Default branch: `main`
-- Description: `Open-source dynamic workflow orchestration for Codex CLI`
-- Topics: `codex`, `agents`, `workflow`, `rust`, `cli`
+- Description: `Open-source dynamic workflow orchestration for CLI agent harnesses`
+- Topics: `agents`, `workflow`, `rust`, `cli`, `orchestration`
 
 ## Release Assets Later
 
