@@ -405,7 +405,6 @@ Use Openflow with this harness command: kimi-k2-cli run --prompt-file {prompt_fi
 ## Docs
 
 - [Full user experience map](docs/USER_EXPERIENCE.md)
-- [YouTube demo plan](docs/YOUTUBE_DEMO_PLAN.md)
 - [Publish and leak-safety checklist](docs/PUBLISH_CHECKLIST.md)
 
 ## Current Limits
