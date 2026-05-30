@@ -57,6 +57,17 @@ openflow resume
 openflow report --print
 ```
 
+## Codex Goal Mode
+
+Codex goal mode is a persistent execution mode for a concrete objective. Use it when the user asks Openflow to run a broad workflow end-to-end, or when the workflow will likely span multiple turns, retries, validation, and final reporting.
+
+When goal mode tools are available:
+
+1. Start a goal with the full user objective, not just the next shell command.
+2. Include the target repo, selected harness, risk gates, expected report, and `openflow validate` requirement in the goal.
+3. Continue until the workflow is complete and the report has been summarized, or until the goal is genuinely blocked.
+4. Do not enter goal mode for a small one-shot task, a plan-only discussion, or a request that only asks for command examples.
+
 ## Template Selection
 
 - Use `--template audit` for bug hunts, security reviews, dead-code searches, architecture audits, and broad repo inspection.
