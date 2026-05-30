@@ -44,6 +44,7 @@ Check it:
 
 ```bash
 openflow --help
+openflow doctor
 ```
 
 Install the Codex skill shortcut:
@@ -120,6 +121,7 @@ openflow status [run-id]
 openflow report [run-id] --print
 openflow apply [run-id]
 openflow install-skill [--name dynamic|openflow|all]
+openflow doctor
 ```
 
 Useful options:
@@ -134,6 +136,18 @@ Useful options:
 --agent-command <template> custom shell command for any harness
 --skip-git-repo-check      passed to the Codex preset
 --yes                      skip approval prompt
+```
+
+Check your local setup:
+
+```bash
+openflow doctor
+```
+
+This verifies git, the default Codex harness, built-in/custom templates, and local Codex skill installation. For a custom harness:
+
+```bash
+openflow doctor --agent kimi-k2 --agent-command 'kimi-k2-cli run --prompt-file {prompt_file} --output {output_file}'
 ```
 
 ## Agent Harness Contract
@@ -422,7 +436,7 @@ The test suite includes fake built-in and custom agent harnesses so the planner,
 ## Roadmap
 
 - Live terminal DAG view
-- GitHub Action mode that uploads reports and patch artifacts
+- GitHub issue/PR report posting
 - More built-in presets for other agent harnesses
 - Native JSONL event ingestion for harnesses that support event streams
 - Better patch merge and conflict handling

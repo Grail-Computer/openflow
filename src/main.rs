@@ -3,10 +3,12 @@
 
 mod agent;
 mod cli;
+mod doctor;
 mod plan;
 mod report;
 mod runner;
 mod schema;
+mod skills;
 mod state;
 mod templates;
 mod util;

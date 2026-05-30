@@ -1,8 +1,10 @@
 use crate::agent::{AgentExec, run_agent_exec};
+use crate::doctor::{DoctorOptions, run_doctor};
 use crate::plan::{WorkflowPlan, normalize_plan, summarize_plan};
 use crate::report::generate_report;
 use crate::runner::{RunnerOptions, run_workflow};
 use crate::schema::workflow_plan_schema;
+use crate::skills::{default_skill_root, install_named_skills};
 use crate::state::{
     RunOptions, attach_plan, create_empty_run, load_state, resolve_run_dir, save_state,
 };
@@ -35,6 +37,7 @@ enum Command {
     Report(ReportArgs),
     Apply(ApplyArgs),
     InstallSkill(InstallSkillArgs),
+    Doctor(DoctorArgs),
 }
 
 #[derive(Args)]
@@ -96,6 +99,21 @@ struct InstallSkillArgs {
     force: bool,
 }
 
+#[derive(Args)]
+struct DoctorArgs {
+    #[arg(long, help = "Agent preset/name to check, default: codex")]
+    agent: Option<String>,
+    #[arg(long, help = "Agent executable to check, default: codex")]
+    agent_bin: Option<String>,
+    #[arg(long, help = "Custom agent command template to check")]
+    agent_command: Option<String>,
+    #[arg(
+        long,
+        help = "Skills root. Defaults to $CODEX_HOME/skills or ~/.codex/skills"
+    )]
+    skills_root: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Args)]
 struct CommonArgs {
     #[arg(long, help = "Workflow template: audit, migration, or pr-review")]
@@ -139,6 +157,7 @@ pub fn run() -> Result<()> {
         Command::Report(args) => report_command(&cwd, args),
         Command::Apply(args) => apply_command(&cwd, args),
         Command::InstallSkill(args) => install_skill_command(args),
+        Command::Doctor(args) => doctor_command(&cwd, args),
     }
 }
 
@@ -320,34 +339,6 @@ fn apply_command(cwd: &Path, args: ApplyArgs) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SkillFile {
-    path: &'static str,
-    content: &'static str,
-}
-
-const OPENFLOW_SKILL_FILES: &[SkillFile] = &[
-    SkillFile {
-        path: "SKILL.md",
-        content: include_str!("../skills/openflow/SKILL.md"),
-    },
-    SkillFile {
-        path: "agents/openai.yaml",
-        content: include_str!("../skills/openflow/agents/openai.yaml"),
-    },
-];
-
-const DYNAMIC_SKILL_FILES: &[SkillFile] = &[
-    SkillFile {
-        path: "SKILL.md",
-        content: include_str!("../skills/dynamic/SKILL.md"),
-    },
-    SkillFile {
-        path: "agents/openai.yaml",
-        content: include_str!("../skills/dynamic/agents/openai.yaml"),
-    },
-];
-
 fn install_skill_command(args: InstallSkillArgs) -> Result<()> {
     let root = args.dest.unwrap_or(default_skill_root()?);
     let installed = install_named_skills(&args.name, &root, args.force)?;
@@ -360,57 +351,34 @@ fn install_skill_command(args: InstallSkillArgs) -> Result<()> {
     Ok(())
 }
 
-fn install_named_skills<'a>(name: &'a str, root: &Path, force: bool) -> Result<Vec<&'a str>> {
-    match name {
-        "dynamic" => {
-            install_skill_files(root, "dynamic", DYNAMIC_SKILL_FILES, force)?;
-            Ok(vec!["dynamic"])
-        }
-        "openflow" => {
-            install_skill_files(root, "openflow", OPENFLOW_SKILL_FILES, force)?;
-            Ok(vec!["openflow"])
-        }
-        "all" => {
-            install_skill_files(root, "dynamic", DYNAMIC_SKILL_FILES, force)?;
-            install_skill_files(root, "openflow", OPENFLOW_SKILL_FILES, force)?;
-            Ok(vec!["dynamic", "openflow"])
-        }
-        other => bail!("unknown skill {other:?}; expected dynamic, openflow, or all"),
-    }
-}
-
-fn install_skill_files(
-    root: &Path,
-    skill_name: &str,
-    files: &[SkillFile],
-    force: bool,
-) -> Result<()> {
-    for file in files {
-        let path = root.join(skill_name).join(file.path);
-        if path.exists() {
-            let existing = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
-            if existing == file.content {
-                continue;
+fn doctor_command(cwd: &Path, args: DoctorArgs) -> Result<()> {
+    let agent = args
+        .agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("codex")
+        .to_string();
+    let agent_bin = args
+        .agent_bin
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            if agent == "codex" {
+                "codex".to_string()
+            } else {
+                agent.clone()
             }
-            if !force {
-                bail!(
-                    "{} already exists and differs; rerun with --force to overwrite",
-                    path.display()
-                );
-            }
-        }
-        write_text(&path, file.content)?;
-    }
-    Ok(())
-}
-
-fn default_skill_root() -> Result<PathBuf> {
-    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
-        return Ok(PathBuf::from(codex_home).join("skills"));
-    }
-    let home = std::env::var_os("HOME").context("HOME is not set; pass --dest explicitly")?;
-    Ok(PathBuf::from(home).join(".codex").join("skills"))
+        });
+    run_doctor(DoctorOptions {
+        cwd: cwd.to_path_buf(),
+        agent,
+        agent_bin,
+        agent_command: args.agent_command,
+        skill_root: args.skills_root,
+    })
 }
 
 fn create_plan(
@@ -859,37 +827,5 @@ esac
             Some("kimi-k2-cli run --prompt-file {prompt_file}")
         );
         assert!(runner.skip_git_repo_check);
-    }
-
-    #[test]
-    fn install_skill_writes_dynamic_alias_and_preserves_local_edits() {
-        let temp = TempDir::new().unwrap();
-        let root = temp.path().join("skills");
-
-        let installed = install_named_skills("dynamic", &root, false).unwrap();
-        assert_eq!(installed, vec!["dynamic"]);
-        let skill = root.join("dynamic").join("SKILL.md");
-        let metadata = root.join("dynamic").join("agents").join("openai.yaml");
-        assert!(
-            fs::read_to_string(&skill)
-                .unwrap()
-                .contains("name: dynamic")
-        );
-        assert!(
-            fs::read_to_string(&metadata)
-                .unwrap()
-                .contains("Dynamic Workflow")
-        );
-
-        fs::write(&skill, "local edit\n").unwrap();
-        let error = install_named_skills("dynamic", &root, false).unwrap_err();
-        assert!(error.to_string().contains("--force"));
-
-        install_named_skills("dynamic", &root, true).unwrap();
-        assert!(
-            fs::read_to_string(&skill)
-                .unwrap()
-                .contains("name: dynamic")
-        );
     }
 }

@@ -10,10 +10,11 @@ description: Use Openflow to plan, run, verify, resume, and report dynamic workf
 ## Preconditions
 
 1. Check that `openflow` is installed with `openflow --help`.
-2. Identify the target harness. Use the default Codex preset unless the user provides another harness command.
-3. For the Codex preset, check `codex --version`. For a custom harness, check the binary or command the user gave.
-4. Work from the target repository root.
-5. For write workflows, make sure the repo is a git repository and inspect `git status --short` before running.
+2. Run `openflow doctor` when checking a fresh install, skill install, or harness setup.
+3. Identify the target harness. Use the default Codex preset unless the user provides another harness command.
+4. For the Codex preset, check `codex --version`. For a custom harness, check the binary or command the user gave.
+5. Work from the target repository root.
+6. For write workflows, make sure the repo is a git repository and inspect `git status --short` before running.
 
 ## Default UX
 

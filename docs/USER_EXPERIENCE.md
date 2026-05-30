@@ -28,11 +28,14 @@ Goal: a user gets a useful report in under five minutes.
 2. Confirm Openflow and a harness:
 
    ```bash
-   openflow --help
-   codex --version
+   openflow doctor
    ```
 
-   Codex is the default preset. For another harness, confirm that command instead.
+   Codex is the default preset. For another harness, run doctor with the custom command template:
+
+   ```bash
+   openflow doctor --agent kimi-k2 --agent-command 'kimi-k2-cli run --prompt-file {prompt_file} --output {output_file}'
+   ```
 
 3. Run in a repo:
 
@@ -157,11 +160,12 @@ Use Openflow to run a workflow that reviews this repo for permission bugs.
 Codex should:
 
 1. Check `openflow --help`.
-2. Identify whether to use the default Codex preset or a user-provided harness command.
-3. Select the right template.
-4. Prefer `openflow plan` for write-heavy work.
-5. Run or resume the workflow.
-6. Summarize `report.md`.
+2. Run `openflow doctor` for a fresh install, skill install, or harness setup check.
+3. Identify whether to use the default Codex preset or a user-provided harness command.
+4. Select the right template.
+5. Prefer `openflow plan` for write-heavy work.
+6. Run or resume the workflow.
+7. Summarize `report.md`.
 
 ## What Users Should See
 
@@ -181,7 +185,5 @@ The CLI should avoid pretending everything is magic. The trust comes from the vi
 ## Friction To Remove Next
 
 - Homebrew install.
-- `openflow doctor` for Rust/git/default harness checks.
 - Better live progress UI.
 - `openflow github-report` for issue/PR comments.
-- `openflow skill install` to install the bundled Codex skill directly.

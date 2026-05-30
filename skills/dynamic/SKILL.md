@@ -25,10 +25,11 @@ Use this skill when the user says:
 ## Preconditions
 
 1. Run `openflow --help`.
-2. If Openflow is missing but this repository is checked out, run `cargo install --path .` from the repo root.
-3. For the default Codex preset, run `codex --version`.
-4. Work from the target repository root.
-5. For write workflows, inspect `git status --short` before running.
+2. Run `openflow doctor` when checking a fresh install, skill install, or harness setup.
+3. If Openflow is missing but this repository is checked out, run `cargo install --path .` from the repo root.
+4. For the default Codex preset, run `codex --version`.
+5. Work from the target repository root.
+6. For write workflows, inspect `git status --short` before running.
 
 ## Default Command
 
