@@ -22,5 +22,6 @@
 - Run `cargo fmt --check` for formatting checks.
 - Run `cargo clippy --all-targets --all-features` before publish if dependencies are available.
 - Run `openflow doctor` after changing bundled skills, skill installation, or harness setup checks.
+- Run `openflow validate` in a disposable run after changing run-state or artifact layout behavior.
 - Do not run real `openflow run` as a routine test because it spends real agent tokens or credits.
 - When a live Codex-backed test is explicitly needed, run it only in a disposable repo; the Codex CLI may need sandbox escalation to write its local state.

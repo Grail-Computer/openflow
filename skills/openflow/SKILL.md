@@ -16,6 +16,19 @@ description: Use Openflow to plan, run, verify, resume, and report dynamic workf
 5. Work from the target repository root.
 6. For write workflows, make sure the repo is a git repository and inspect `git status --short` before running.
 
+## Decision Rule
+
+Use Openflow orchestration when at least two are true:
+
+- The task has independent research, coding, review, migration, QA, docs, or design tracks.
+- The task is broad enough that an explicit success contract would reduce drift.
+- The task has risk: destructive edits, external writes, deploys, secrets, production data, billing, user accounts, or large repo-wide changes.
+- Verification benefits from a separate pass from implementation.
+- The workflow could become a reusable recipe or project template.
+- The user explicitly asks for a dynamic workflow, swarm, parallel agents, fan-out/fan-in, or Openflow.
+
+If the task is small, do it directly and mention that full workflow orchestration was unnecessary.
+
 ## Default UX
 
 For read-heavy audits or reviews, run a single command:
@@ -99,7 +112,21 @@ Precedence is built-in/CLI defaults, then workflow defaults, then task overrides
 4. Read `openflow status` before resuming a run.
 5. Use `openflow report --print` to summarize results back to the user.
 6. Do not apply patches automatically unless the user asked for that. If applying, run `openflow apply` and report what changed.
-7. If a run fails, inspect `.openflow/runs/<run-id>/planner.log`, task `worker.log`, and verifier logs before retrying.
+7. Use `openflow validate` before presenting a shareable or high-stakes result.
+8. If a run fails, inspect `.openflow/runs/<run-id>/planner.log`, task `worker.log`, and verifier logs before retrying.
+
+## Approval Gates
+
+Prefer `openflow plan` and ask one clear approval question before:
+
+- deleting, overwriting, mass-renaming, force-pushing, or rewriting history
+- running migrations, broad codemods, or dependency upgrades
+- deploying, publishing, emailing, posting, or changing external systems
+- touching credentials, secrets, billing, production data, user accounts, or private customer data
+- spawning unusually many agents or running expensive jobs
+- making changes outside the requested repository or workspace
+
+If approval is denied or unavailable, continue only with safe read-only planning, local drafts, or non-destructive checks.
 
 ## Output Contract
 
@@ -111,4 +138,5 @@ When reporting back to the user, include:
 - selected harness or `--agent-command`
 - high-signal findings or changed files
 - whether patches were only generated or actually applied
+- validation status
 - verification command results, if any

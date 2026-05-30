@@ -122,6 +122,7 @@ openflow report [run-id] --print
 openflow apply [run-id]
 openflow install-skill [--name dynamic|openflow|all]
 openflow doctor
+openflow validate [run-id]
 ```
 
 Useful options:
@@ -149,6 +150,14 @@ This verifies git, the default Codex harness, built-in/custom templates, and loc
 ```bash
 openflow doctor --agent kimi-k2 --agent-command 'kimi-k2-cli run --prompt-file {prompt_file} --output {output_file}'
 ```
+
+Validate a completed or interrupted run:
+
+```bash
+openflow validate [run-id]
+```
+
+This checks that the run state, plan, task result artifacts, verifier results, patch files, worker logs, and report are internally consistent enough to audit or share.
 
 ## Agent Harness Contract
 
@@ -364,6 +373,12 @@ The planner might create tasks like:
 - `synthesize-risk-report`
 
 Each task gets its own worker prompt. Each result is checked by a verifier before it lands in the final report.
+
+Before sharing a run, validate that the artifacts are complete:
+
+```bash
+openflow validate
+```
 
 ## Agent Skill
 

@@ -22,6 +22,19 @@ Use this skill when the user says:
 - "verified multi-agent audit"
 - "use Openflow"
 
+## Decision Rule
+
+Use Openflow orchestration when at least two are true:
+
+- The task has independent research, coding, review, migration, QA, docs, or design tracks.
+- The task is broad enough that an explicit success contract would reduce drift.
+- The task has risk: destructive edits, external writes, deploys, secrets, production data, billing, user accounts, or large repo-wide changes.
+- Verification benefits from a separate pass from implementation.
+- The workflow could become a reusable recipe or template.
+- The user explicitly asks for a dynamic workflow, swarm, parallel agents, or Openflow.
+
+If the task is small, do it directly and mention that full workflow orchestration was unnecessary.
+
 ## Preconditions
 
 1. Run `openflow --help`.
@@ -66,8 +79,22 @@ Prefer `{prompt_file}` over `{prompt}` because workflow prompts can be long.
 2. Use staged `plan -> approve -> resume` for writes, external systems, expensive work, or ambiguous scope.
 3. Do not apply generated patches unless the user asks.
 4. Use `openflow status` before resuming an interrupted run.
-5. Use `openflow report --print` to summarize results.
-6. If the workflow fails, inspect `planner.log`, task `worker.log`, verifier JSON, and `report.md`.
+5. Use `openflow validate` before presenting a shareable or high-stakes result.
+6. Use `openflow report --print` to summarize results.
+7. If the workflow fails, inspect `planner.log`, task `worker.log`, verifier JSON, and `report.md`.
+
+## Approval Gates
+
+Prefer `openflow plan` and ask one clear approval question before:
+
+- deleting, overwriting, mass-renaming, force-pushing, or rewriting history
+- running migrations, broad codemods, or dependency upgrades
+- deploying, publishing, emailing, posting, or changing external systems
+- touching credentials, secrets, billing, production data, user accounts, or private customer data
+- spawning unusually many agents or running expensive jobs
+- making changes outside the requested repository or workspace
+
+If approval is denied or unavailable, continue only with safe read-only planning, local drafts, or non-destructive checks.
 
 ## Output Contract
 
@@ -79,4 +106,5 @@ Report back with:
 - selected harness
 - high-signal findings or changed files
 - whether patches were only generated or actually applied
+- validation status
 - local verification results

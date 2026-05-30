@@ -12,6 +12,7 @@ mod skills;
 mod state;
 mod templates;
 mod util;
+mod validate;
 mod worktree;
 
 fn main() {

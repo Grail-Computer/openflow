@@ -45,7 +45,8 @@ Goal: a user gets a useful report in under five minutes.
 
 4. Watch the plan summary and approve.
 5. Open the generated report path.
-6. Share `report.md` or paste findings into an issue.
+6. Run `openflow validate` if the report will be shared.
+7. Share `report.md` or paste findings into an issue.
 
 ## Daily UX
 
@@ -60,6 +61,7 @@ Expected result:
 - plan summary
 - parallel worker progress
 - verifier-backed report
+- `openflow validate` confirms the run artifacts are complete
 - no file changes
 
 ### Custom Harness
@@ -121,6 +123,21 @@ This is the intended UX principle:
 - Fully editable when users want control.
 - Same state files and reports either way.
 
+### Run Validation
+
+```bash
+openflow validate [run-id]
+```
+
+Expected result:
+
+- state file parses
+- plan still validates
+- task results exist for completed tasks
+- accepted verifier results are present when verification was required
+- patch files and worker logs exist when referenced
+- final report exists for completed, failed, or blocked runs
+
 ### Migration
 
 ```bash
@@ -165,7 +182,8 @@ Codex should:
 4. Select the right template.
 5. Prefer `openflow plan` for write-heavy work.
 6. Run or resume the workflow.
-7. Summarize `report.md`.
+7. Run `openflow validate` before presenting a shareable or high-stakes result.
+8. Summarize `report.md`.
 
 ## What Users Should See
 
@@ -178,6 +196,7 @@ Openflow should make the invisible orchestration visible:
 - model and harness overrides
 - run id
 - report path
+- validation status
 - patch paths
 
 The CLI should avoid pretending everything is magic. The trust comes from the visible files.

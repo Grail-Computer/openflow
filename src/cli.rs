@@ -10,6 +10,7 @@ use crate::state::{
 };
 use crate::templates::{install_project_templates, load_template, template_names};
 use crate::util::{parse_json_object, write_json, write_text};
+use crate::validate::run_validation;
 use crate::worktree::apply_patch_file;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -38,6 +39,7 @@ enum Command {
     Apply(ApplyArgs),
     InstallSkill(InstallSkillArgs),
     Doctor(DoctorArgs),
+    Validate(RunIdArg),
 }
 
 #[derive(Args)]
@@ -158,6 +160,7 @@ pub fn run() -> Result<()> {
         Command::Apply(args) => apply_command(&cwd, args),
         Command::InstallSkill(args) => install_skill_command(args),
         Command::Doctor(args) => doctor_command(&cwd, args),
+        Command::Validate(args) => validate_command(&cwd, args.run_id.as_deref()),
     }
 }
 
@@ -379,6 +382,11 @@ fn doctor_command(cwd: &Path, args: DoctorArgs) -> Result<()> {
         agent_command: args.agent_command,
         skill_root: args.skills_root,
     })
+}
+
+fn validate_command(cwd: &Path, run_id: Option<&str>) -> Result<()> {
+    let run_dir = resolve_run_dir(cwd, run_id)?;
+    run_validation(&run_dir)
 }
 
 fn create_plan(
