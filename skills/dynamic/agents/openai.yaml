@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dynamic Workflow"
+  short_description: "Invoke Openflow with a short dynamic-workflow entry point"
+  default_prompt: "Use $dynamic to plan and run a verified Openflow dynamic workflow for this task."

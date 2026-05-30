@@ -46,6 +46,15 @@ Check it:
 openflow --help
 ```
 
+Install the Codex skill shortcut:
+
+```bash
+openflow install-skill
+```
+
+This installs the `dynamic` skill into `$CODEX_HOME/skills` or `~/.codex/skills`.
+Restart Codex, then invoke it with `Use $dynamic ...` or `/dynamic` if your client exposes skill shortcuts.
+
 ## Quick Start
 
 Run a read-only audit:
@@ -110,6 +119,7 @@ openflow resume [run-id]
 openflow status [run-id]
 openflow report [run-id] --print
 openflow apply [run-id]
+openflow install-skill [--name dynamic|openflow|all]
 ```
 
 Useful options:
@@ -343,20 +353,33 @@ Each task gets its own worker prompt. Each result is checked by a verifier befor
 
 ## Agent Skill
 
-This repo includes an optional Codex skill at [skills/openflow/SKILL.md](skills/openflow/SKILL.md). It teaches Codex how to call Openflow, including custom agent harnesses.
+This repo includes Codex skills:
 
-Install it into your Codex skills folder:
+- [skills/dynamic/SKILL.md](skills/dynamic/SKILL.md): short, viral-friendly entry point for dynamic workflows.
+- [skills/openflow/SKILL.md](skills/openflow/SKILL.md): explicit Openflow operator skill with more direct CLI guidance.
+
+Install the default `dynamic` shortcut:
 
 ```bash
-mkdir -p ~/.codex/skills/openflow
-curl -fsSL https://raw.githubusercontent.com/Grail-Computer/openflow/main/skills/openflow/SKILL.md \
-  -o ~/.codex/skills/openflow/SKILL.md
+openflow install-skill
+```
+
+Install both skills:
+
+```bash
+openflow install-skill --name all
 ```
 
 Then ask Codex for a workflow:
 
 ```text
-Use Openflow to run a workflow that audits this repo for auth bugs.
+Use $dynamic to run a workflow that audits this repo for auth bugs.
+```
+
+If your Codex client exposes skill shortcuts, invoke:
+
+```text
+/dynamic
 ```
 
 Or:

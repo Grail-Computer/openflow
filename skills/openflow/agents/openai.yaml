@@ -1,0 +1,4 @@
+interface:
+  display_name: "Openflow"
+  short_description: "Run verified dynamic workflows with Codex or any CLI agent harness"
+  default_prompt: "Use $openflow to plan and run a verified dynamic workflow for this task."

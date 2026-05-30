@@ -12,6 +12,7 @@
 - Do not add npm, Node, or TypeScript tooling; keep the CLI Rust-native.
 - Keep Codex as a first-class preset, not a hard product dependency. Custom harnesses should work through `--agent-command`.
 - Keep structured-output schemas strict-compatible: list every object property in `required` when `additionalProperties: false`, and model optional overrides as nullable values.
+- Keep `openflow install-skill` and files under `skills/` in sync; the installer embeds skill files at compile time.
 
 ## Verification
 
