@@ -20,6 +20,8 @@ pub struct RunState {
     pub created_at: String,
     pub updated_at: String,
     pub options: RunOptions,
+    #[serde(default)]
+    pub observations: Vec<RunObservation>,
     pub plan: Option<WorkflowPlan>,
     pub tasks: BTreeMap<String, TaskState>,
     pub events: Vec<Event>,
@@ -36,6 +38,17 @@ pub struct RunOptions {
     pub agent_bin: String,
     pub agent_command: Option<String>,
     pub skip_git_repo_check: bool,
+    #[serde(default)]
+    pub brake_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunObservation {
+    pub source: String,
+    pub path: PathBuf,
+    pub captured_at: String,
+    pub content: String,
 }
 
 fn default_max_retries() -> usize {
@@ -112,6 +125,7 @@ pub fn create_empty_run(
         created_at: now(),
         updated_at: now(),
         options,
+        observations: Vec::new(),
         plan: None,
         tasks: BTreeMap::new(),
         events: Vec::new(),
@@ -119,6 +133,52 @@ pub fn create_empty_run(
     add_event(&mut state, "run.created", "Created run", None);
     save_state(&directory, &mut state)?;
     Ok((state, directory))
+}
+
+pub fn replace_observations(state: &mut RunState, observations: Vec<RunObservation>) {
+    if observations.is_empty() {
+        return;
+    }
+    let count = observations.len();
+    state.observations = observations;
+    add_event(
+        state,
+        "observations.updated",
+        &format!("Captured {count} controller observation file(s)"),
+        None,
+    );
+}
+
+pub fn format_observations(observations: &[RunObservation], max_chars_per_file: usize) -> String {
+    if observations.is_empty() {
+        return "none".to_string();
+    }
+    observations
+        .iter()
+        .map(|observation| {
+            let content = if observation.content.chars().count() <= max_chars_per_file {
+                observation.content.clone()
+            } else {
+                let snippet = observation
+                    .content
+                    .chars()
+                    .take(max_chars_per_file)
+                    .collect::<String>();
+                format!(
+                    "{snippet}\n\n[truncated {} chars]",
+                    observation.content.chars().count() - max_chars_per_file
+                )
+            };
+            format!(
+                "## {}: {}\nCaptured: {}\n\n{}",
+                observation.source,
+                observation.path.display(),
+                observation.captured_at,
+                content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 pub fn attach_plan(state: &mut RunState, plan: WorkflowPlan) {

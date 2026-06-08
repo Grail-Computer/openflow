@@ -1,4 +1,5 @@
 use crate::state::RunState;
+use crate::state::format_observations;
 use crate::util::{duration_label, read_snippet, write_text};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,15 @@ pub fn generate_report(state: &RunState, run_dir: &Path) -> Result<PathBuf> {
     lines.push(format!("Created: {}", state.created_at));
     lines.push(format!("Updated: {}", state.updated_at));
     lines.push(String::new());
+
+    if !state.observations.is_empty() {
+        lines.push("## Controller Observations".to_string());
+        lines.push(String::new());
+        lines.push("```markdown".to_string());
+        lines.push(format_observations(&state.observations, 20_000));
+        lines.push("```".to_string());
+        lines.push(String::new());
+    }
 
     if let Some(plan) = &state.plan {
         lines.push("## Objective".to_string());

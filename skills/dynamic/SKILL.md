@@ -61,6 +61,26 @@ openflow resume
 openflow report --print
 ```
 
+For local control-loop runs, capture observed state first and attach it:
+
+```bash
+./scripts/check.sh > .codex-loop/status.md 2>&1
+openflow run "workflow: <user request>" \
+  --status-file .codex-loop/status.md \
+  --brake-file .codex-loop/brake
+```
+
+Use `--status-file` for controller-maintained state such as failing checks, logs, `git status`, or a previous attempt summary. Openflow persists it in the run state and includes it in planner, worker, verifier, report, and validation artifacts. Use `--brake-file` when the loop needs an external stop switch; if the file exists and contains text, Openflow blocks before the next task batch.
+
+## Loop Model
+
+- Default to closed loops: clear goal, bounded task graph, eval gates, and stop/handoff conditions.
+- Use open loops only when the user asks for broad discovery or unknown-path exploration; still bound them with budget, risk, status, and verification.
+- Treat the planner as orchestrator, tasks as specialist workers, verifiers as adversarial gates, and reports as decision output.
+- Keep writes reversible: Openflow write tasks run in isolated git worktrees and produce patch queues; do not apply patches unless asked.
+- Fail closed: unsupported, stale, risky, or out-of-scope worker output should be rejected by verifiers.
+- Keep the brake outside the worker's control when possible.
+
 ## Codex Goal Mode
 
 Codex goal mode is for sustained execution. Use it when the user asks this skill to run a broad workflow end-to-end, or when the workflow will likely require multiple turns, retries, validation, and a final report.
@@ -90,9 +110,10 @@ Prefer `{prompt_file}` over `{prompt}` because workflow prompts can be long.
 2. Use staged `plan -> approve -> resume` for writes, external systems, expensive work, or ambiguous scope.
 3. Do not apply generated patches unless the user asks.
 4. Use `openflow status` before resuming an interrupted run.
-5. Use `openflow validate` before presenting a shareable or high-stakes result.
-6. Use `openflow report --print` to summarize results.
-7. If the workflow fails, inspect `planner.log`, task `worker.log`, verifier JSON, and `report.md`.
+5. If observed state changed, resume with `--status-file <path>` so the status object refreshes before execution.
+6. Use `openflow validate` before presenting a shareable or high-stakes result.
+7. Use `openflow report --print` to summarize results.
+8. If the workflow fails, inspect `planner.log`, task `worker.log`, verifier JSON, and `report.md`.
 
 ## Approval Gates
 

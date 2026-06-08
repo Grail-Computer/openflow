@@ -57,6 +57,26 @@ openflow resume
 openflow report --print
 ```
 
+For local control-loop runs, capture deterministic observations first and attach them:
+
+```bash
+./scripts/check.sh > .codex-loop/status.md 2>&1
+openflow run "workflow: <user request>" \
+  --status-file .codex-loop/status.md \
+  --brake-file .codex-loop/brake
+```
+
+Use `--status-file` for controller-maintained state such as failing tests, logs, screenshots described in text, `git status`, or a previous attempt summary. Openflow persists it in the run state and includes it in planner, worker, verifier, report, and validation artifacts. Use `--brake-file` when the loop needs an external stop switch; if the file exists and contains text, Openflow blocks before the next task batch.
+
+## Loop Model
+
+- Default to closed loops: clear goal, bounded task graph, eval gates, and stop/handoff conditions.
+- Use open loops only when the user asks for broad discovery or unknown-path exploration; still bound them with budget, risk, status, and verification.
+- Treat the planner as orchestrator, tasks as specialist workers, verifiers as adversarial gates, and reports as decision output.
+- Keep writes reversible: Openflow write tasks run in isolated git worktrees and produce patch queues; do not apply patches unless asked.
+- Fail closed: unsupported, stale, risky, or out-of-scope worker output should be rejected by verifiers.
+- Keep the brake outside the worker's control when possible.
+
 ## Codex Goal Mode
 
 Codex goal mode is a persistent execution mode for a concrete objective. Use it when the user asks Openflow to run a broad workflow end-to-end, or when the workflow will likely span multiple turns, retries, validation, and final reporting.
@@ -121,10 +141,11 @@ Precedence is built-in/CLI defaults, then workflow defaults, then task overrides
 2. Use `openflow plan` first when a workflow includes write tasks, expensive scope, or uncertain blast radius.
 3. If the user wants per-step customization, edit `.openflow/runs/<run-id>/plan.json` before approval/resume.
 4. Read `openflow status` before resuming a run.
-5. Use `openflow report --print` to summarize results back to the user.
-6. Do not apply patches automatically unless the user asked for that. If applying, run `openflow apply` and report what changed.
-7. Use `openflow validate` before presenting a shareable or high-stakes result.
-8. If a run fails, inspect `.openflow/runs/<run-id>/planner.log`, task `worker.log`, and verifier logs before retrying.
+5. If the controller status has changed, rerun/resume with `--status-file <path>` so observations refresh before execution.
+6. Use `openflow report --print` to summarize results back to the user.
+7. Do not apply patches automatically unless the user asked for that. If applying, run `openflow apply` and report what changed.
+8. Use `openflow validate` before presenting a shareable or high-stakes result.
+9. If a run fails, inspect `.openflow/runs/<run-id>/planner.log`, task `worker.log`, and verifier logs before retrying.
 
 ## Approval Gates
 

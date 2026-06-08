@@ -105,6 +105,7 @@ fn validate_state(report: &mut ValidationReport, run_dir: &Path, state: &RunStat
     };
 
     validate_task_state(report, &normalized_plan, state);
+    validate_observations(report, state);
     let counts = validate_artifacts(report, run_dir, &normalized_plan, state);
     if counts.results > 0 {
         report.push_ok("results", format!("{} result artifact(s)", counts.results));
@@ -119,6 +120,29 @@ fn validate_state(report: &mut ValidationReport, run_dir: &Path, state: &RunStat
         report.push_ok("patches", format!("{} patch artifact(s)", counts.patches));
     }
     validate_report_artifact(report, run_dir, state);
+}
+
+fn validate_observations(report: &mut ValidationReport, state: &RunState) {
+    if state.observations.is_empty() {
+        return;
+    }
+    let empty = state
+        .observations
+        .iter()
+        .filter(|observation| observation.content.trim().is_empty())
+        .map(|observation| observation.path.display().to_string())
+        .collect::<Vec<_>>();
+    if empty.is_empty() {
+        report.push_ok(
+            "observations",
+            format!("{} captured status file(s)", state.observations.len()),
+        );
+    } else {
+        report.push_warn(
+            "observations",
+            format!("empty captured observation(s): {}", empty.join(", ")),
+        );
+    }
 }
 
 fn validate_task_state(report: &mut ValidationReport, plan: &WorkflowPlan, state: &RunState) {
@@ -449,6 +473,7 @@ mod tests {
                 agent_bin: "custom".to_string(),
                 agent_command: Some("fake".to_string()),
                 skip_git_repo_check: true,
+                brake_file: None,
             },
         )
         .unwrap();

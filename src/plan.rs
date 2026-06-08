@@ -159,6 +159,15 @@ pub fn normalize_plan(mut plan: WorkflowPlan, default_concurrency: usize) -> Res
         if !ids.insert(task.id.clone()) {
             bail!("duplicate task id: {}", task.id);
         }
+        task.agent = normalize_optional_string(task.agent.take());
+        task.agent_bin = normalize_optional_string(task.agent_bin.take());
+        task.agent_command = normalize_optional_string(task.agent_command.take());
+        task.model = normalize_optional_string(task.model.take());
+        task.verification_prompt = normalize_optional_string(task.verification_prompt.take());
+        task.verifier_agent = normalize_optional_string(task.verifier_agent.take());
+        task.verifier_agent_bin = normalize_optional_string(task.verifier_agent_bin.take());
+        task.verifier_agent_command = normalize_optional_string(task.verifier_agent_command.take());
+        task.verifier_model = normalize_optional_string(task.verifier_model.take());
         if !matches!(
             task.kind.as_str(),
             "explore" | "implement" | "verify" | "fix" | "synthesize"
@@ -206,6 +215,16 @@ pub fn normalize_plan(mut plan: WorkflowPlan, default_concurrency: usize) -> Res
         task.max_retries = task.max_retries.map(|value| value.clamp(0, 5));
         task.verifiers_per_task = task.verifiers_per_task.map(|value| value.clamp(0, 3));
     }
+    plan.defaults.agent = normalize_optional_string(plan.defaults.agent.take());
+    plan.defaults.agent_bin = normalize_optional_string(plan.defaults.agent_bin.take());
+    plan.defaults.agent_command = normalize_optional_string(plan.defaults.agent_command.take());
+    plan.defaults.model = normalize_optional_string(plan.defaults.model.take());
+    plan.defaults.verifier_agent = normalize_optional_string(plan.defaults.verifier_agent.take());
+    plan.defaults.verifier_agent_bin =
+        normalize_optional_string(plan.defaults.verifier_agent_bin.take());
+    plan.defaults.verifier_agent_command =
+        normalize_optional_string(plan.defaults.verifier_agent_command.take());
+    plan.defaults.verifier_model = normalize_optional_string(plan.defaults.verifier_model.take());
     plan.defaults.sandbox = normalize_optional_sandbox(plan.defaults.sandbox.take());
     plan.defaults.write_sandbox = normalize_optional_sandbox(plan.defaults.write_sandbox.take());
     plan.defaults.verifier_sandbox =
@@ -308,7 +327,7 @@ fn default_max_retries() -> usize {
     1
 }
 fn default_verification_prompt() -> String {
-    "Verify that the task result is accurate, evidence-backed, scoped to the task, and free of unsupported claims.".to_string()
+    "Act as an adversarial verifier. Fail closed unless the task result is accurate, evidence-backed, scoped to the task, and free of unsupported claims.".to_string()
 }
 fn default_report_format() -> String {
     "markdown".to_string()
@@ -333,6 +352,22 @@ fn normalize_optional_sandbox(value: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         } else {
             None
+        }
+    })
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty()
+            || matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "none" | "null" | "<none>" | "<configured>"
+            )
+        {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
     })
 }
@@ -488,5 +523,21 @@ mod tests {
         let plan = normalize_plan(plan, 4).unwrap();
         assert_eq!(plan.tasks[0].role, "reviewer");
         assert_eq!(plan.tasks[0].agent, None);
+    }
+
+    #[test]
+    fn normalizes_planner_placeholder_optional_overrides() {
+        let mut plan = minimal_plan();
+        plan.defaults.agent_command = Some("<configured>".to_string());
+        plan.defaults.model = Some("none".to_string());
+        plan.tasks[0].agent_command = Some("<configured>".to_string());
+        plan.tasks[0].model = Some("none".to_string());
+
+        let plan = normalize_plan(plan, 4).unwrap();
+
+        assert_eq!(plan.defaults.agent_command, None);
+        assert_eq!(plan.defaults.model, None);
+        assert_eq!(plan.tasks[0].agent_command, None);
+        assert_eq!(plan.tasks[0].model, None);
     }
 }

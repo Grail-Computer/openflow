@@ -135,9 +135,46 @@ Useful options:
 --agent <name>             agent preset/name, default: codex
 --agent-bin <path>         executable for built-in presets, default: codex
 --agent-command <template> custom shell command for any harness
+--status-file <path>       attach controller observations/status to the plan, workers, verifiers, report, and validation output
+--brake-file <path>        block before the next task batch if this file exists and has non-empty content
 --skip-git-repo-check      passed to the Codex preset
 --yes                      skip approval prompt
 ```
+
+## What Openflow Means By Loop
+
+Openflow treats a loop as a controller around agent workers:
+
+- **Desired state:** the workflow objective and generated `plan.json`.
+- **Observed state:** status files, prior task results, verifier output, logs, and `state.json`.
+- **Actuator:** Codex or another CLI harness running planner, worker, and verifier prompts.
+- **Gate:** adversarial verifiers that fail closed when evidence is missing or outside scope.
+- **Brake:** `--brake-file`, approval gates, and patch queues that workers cannot apply by themselves.
+- **Memory:** reports, events, and artifacts saved under `.openflow/runs/<run-id>/`.
+
+Openflow defaults to closed loops: bounded tasks, explicit dependencies, eval gates, and a clear report. Open-loop exploration is still possible through broader prompts and audit-style templates, but it should remain bounded by verification, cost, and stop conditions.
+
+Write tasks are reversible by design. Workers operate in isolated git worktrees and Openflow captures patch files under `.openflow/runs/<run-id>/patches`; nothing lands in the main workspace until `openflow apply`.
+
+## Local Codex Control Loops
+
+Openflow can be used as the controller around local `codex exec` runs. Keep a small status object in your repo, refresh it with deterministic observations, then pass it into Openflow:
+
+```bash
+mkdir -p .codex-loop
+{
+  git status --short
+  printf '\n## Check\n'
+  npm test -- --runInBand 2>&1
+} > .codex-loop/status.md
+
+openflow run "workflow: fix the failing test with the smallest safe change" \
+  --template migration \
+  --status-file .codex-loop/status.md \
+  --brake-file .codex-loop/brake
+```
+
+The status file is copied into `.openflow/runs/<run-id>/state.json`, included in planner, worker, and verifier prompts, rendered in `report.md`, and checked by `openflow validate`. That gives the loop a durable "observed state" instead of relying only on conversation history. If `.codex-loop/brake` exists and contains text, Openflow blocks before starting the next task batch.
 
 Check your local setup:
 

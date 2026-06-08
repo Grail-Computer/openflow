@@ -13,6 +13,7 @@
 - Keep Codex as a first-class preset, not a hard product dependency. Custom harnesses should work through `--agent-command`.
 - Keep structured-output schemas strict-compatible: list every object property in `required` when `additionalProperties: false`, and model optional overrides as nullable values.
 - Keep `openflow install-skill` and files under `skills/` in sync; the installer embeds skill files at compile time.
+- For write workflows, run verifier agents against the task worktree containing the patch; verifying against the original workspace produces false failures.
 
 ## Verification
 
@@ -25,3 +26,4 @@
 - Run `openflow validate` in a disposable run after changing run-state or artifact layout behavior.
 - Do not run real `openflow run` as a routine test because it spends real agent tokens or credits.
 - When a live Codex-backed test is explicitly needed, run it only in a disposable repo; the Codex CLI may need sandbox escalation to write its local state.
+- If live Codex tests fail on `service_tier = "priority"` in local config, use a custom agent command that wraps `codex exec -c 'service_tier="fast"'` rather than editing user config during the test.

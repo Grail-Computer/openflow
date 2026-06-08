@@ -6,10 +6,11 @@ use crate::runner::{RunnerOptions, run_workflow};
 use crate::schema::workflow_plan_schema;
 use crate::skills::{default_skill_root, install_named_skills};
 use crate::state::{
-    RunOptions, attach_plan, create_empty_run, load_state, resolve_run_dir, save_state,
+    RunObservation, RunOptions, attach_plan, create_empty_run, format_observations, load_state,
+    replace_observations, resolve_run_dir, save_state,
 };
 use crate::templates::{install_project_templates, load_template, template_names};
-use crate::util::{parse_json_object, write_json, write_text};
+use crate::util::{parse_json_object, read_snippet, relative_to, write_json, write_text};
 use crate::validate::run_validation;
 use crate::worktree::apply_patch_file;
 use anyhow::{Context, Result, bail};
@@ -136,6 +137,18 @@ struct CommonArgs {
     codex_bin: Option<String>,
     #[arg(long)]
     skip_git_repo_check: bool,
+    #[arg(
+        long = "status-file",
+        value_name = "PATH",
+        help = "Attach a controller-maintained status/observation file to planner, worker, verifier, report, and validation artifacts. Repeatable."
+    )]
+    status_files: Vec<PathBuf>,
+    #[arg(
+        long = "brake-file",
+        value_name = "PATH",
+        help = "Stop before starting the next task batch when this file exists and contains non-whitespace text."
+    )]
+    brake_file: Option<PathBuf>,
     #[arg(long)]
     yes: bool,
 }
@@ -188,7 +201,16 @@ fn plan_command(cwd: &Path, args: PlanArgs) -> Result<()> {
         template.as_ref().map(|template| template.name.clone()),
         options,
     )?;
-    let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args.common)?;
+    replace_observations(&mut state, load_status_files(cwd, &args.common)?);
+    save_state(&run_dir, &mut state)?;
+    let plan = create_plan(
+        cwd,
+        &run_dir,
+        &prompt,
+        template.as_ref(),
+        &args.common,
+        &state.observations,
+    )?;
     attach_plan(&mut state, plan);
     save_state(&run_dir, &mut state)?;
     print_plan_summary(state.plan.as_ref().unwrap(), &state.id);
@@ -228,12 +250,23 @@ fn run_command(cwd: &Path, args: RunArgs) -> Result<()> {
         )?;
         state = created.0;
         run_dir = created.1;
-        let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args.common)?;
+        replace_observations(&mut state, load_status_files(cwd, &args.common)?);
+        save_state(&run_dir, &mut state)?;
+        let plan = create_plan(
+            cwd,
+            &run_dir,
+            &prompt,
+            template.as_ref(),
+            &args.common,
+            &state.observations,
+        )?;
         attach_plan(&mut state, plan);
         save_state(&run_dir, &mut state)?;
     } else {
         run_dir = resolve_run_dir(cwd, None)?;
         state = load_state(&run_dir)?;
+        replace_observations(&mut state, load_status_files(cwd, &args.common)?);
+        save_state(&run_dir, &mut state)?;
     }
 
     if state.status == "planned" {
@@ -257,6 +290,7 @@ fn resume_command(cwd: &Path, args: ResumeArgs) -> Result<()> {
         confirm_plan(&args.common, state.plan.as_ref().unwrap())?;
         state.status = "approved".to_string();
     }
+    replace_observations(&mut state, load_status_files(cwd, &args.common)?);
     for task in state.tasks.values_mut() {
         if matches!(task.status.as_str(), "running" | "failed" | "blocked") {
             task.status = "pending".to_string();
@@ -395,6 +429,7 @@ fn create_plan(
     prompt: &str,
     template: Option<&crate::templates::Template>,
     args: &CommonArgs,
+    observations: &[RunObservation],
 ) -> Result<WorkflowPlan> {
     let schema_dir = run_dir.join("schemas");
     write_json(
@@ -402,7 +437,7 @@ fn create_plan(
         &workflow_plan_schema(),
     )?;
     let run_options = to_run_options(args);
-    let planner_prompt = build_planner_prompt(prompt, template, &run_options);
+    let planner_prompt = build_planner_prompt(prompt, template, &run_options, observations);
     write_text(&run_dir.join("planner-prompt.md"), &planner_prompt)?;
     let output_path = run_dir.join("plan.raw.json");
     run_agent_exec(&AgentExec {
@@ -431,20 +466,25 @@ fn build_planner_prompt(
     prompt: &str,
     template: Option<&crate::templates::Template>,
     options: &RunOptions,
+    observations: &[RunObservation],
 ) -> String {
     format!(
         "You are the planner for Openflow, an open-source dynamic workflow runner for CLI agent harnesses.\n\n\
 Create a strict, executable workflow plan as JSON only. The plan will be validated and then executed by separate agent workers.\n\n\
 Planning rules:\n\
 - Break the work into independently useful tasks with explicit dependencies.\n\
+- Default to closed-loop workflows: clear goal, bounded tasks, explicit eval gates, and concrete stop or handoff conditions.\n\
+- Use open-loop exploration only when the user asks for broad discovery or the task genuinely needs unknown-path research; keep it bounded by budget, risk, and verification.\n\
 - Prefer read-only exploration and verification tasks unless the user clearly asks for code changes.\n\
 - Set writes=false for audit, research, review, and planning tasks.\n\
-- Set writes=true only when a worker must edit files.\n\
+- Set writes=true only when a worker must edit files, and make write tasks reversible by producing focused patches rather than applying broad changes directly.\n\
 - Keep the default UX simple: use null for optional override fields unless a task truly needs a different model, agent harness, sandbox, retry count, or verifier setup.\n\
 - Use workflow defaults for settings that should apply to many tasks, and task overrides only for exceptions.\n\
 - To use a different model for one step, set that task's model field.\n\
 - Keep each task prompt scoped enough for a fresh worker with no conversation history.\n\
-- Include verifier guidance so another worker can reject weak or unsupported results.\n\
+- Treat controller observations as the current status object. Use them to plan from observed reality, call out stale or missing observations, and make stop/verification/brake conditions explicit.\n\
+- Include adversarial verifier guidance so another worker fails closed on weak, stale, risky, or unsupported results.\n\
+- Use roles deliberately: the planner is the orchestrator, tasks are specialist workers, verifier tasks are independent gates, and reports should preserve only decision-relevant output.\n\
 - Use stable kebab-case task ids.\n\n\
 Runtime defaults:\n\
 - agent: {}\n\
@@ -454,12 +494,13 @@ Runtime defaults:\n\
 - maxConcurrency: {}\n\
 - maxRetries: {}\n\n\
 Template guidance:\n{}\n\n\
+Controller observations/status object:\n{}\n\n\
 User request:\n{}\n\n\
 Return a JSON object matching the provided schema. Do not wrap it in markdown.\n",
         options.agent,
         options.agent_bin,
         if options.agent_command.is_some() {
-            "<configured>"
+            "configured in runner options; leave agentCommand null unless overriding"
         } else {
             "none"
         },
@@ -469,6 +510,7 @@ Return a JSON object matching the provided schema. Do not wrap it in markdown.\n
         template
             .map(|template| template.content.as_str())
             .unwrap_or("none"),
+        format_observations(observations, 16_000),
         prompt
     )
 }
@@ -546,6 +588,27 @@ fn read_prompt(parts: &[String]) -> Result<String> {
     bail!("missing workflow prompt")
 }
 
+fn load_status_files(cwd: &Path, args: &CommonArgs) -> Result<Vec<RunObservation>> {
+    args.status_files
+        .iter()
+        .map(|path| {
+            let absolute = if path.is_absolute() {
+                path.clone()
+            } else {
+                cwd.join(path)
+            };
+            let content = read_snippet(&absolute, 32_000)
+                .with_context(|| format!("failed to read status file {}", absolute.display()))?;
+            Ok(RunObservation {
+                source: "status-file".to_string(),
+                path: relative_to(cwd, &absolute),
+                captured_at: crate::util::now(),
+                content,
+            })
+        })
+        .collect()
+}
+
 fn to_run_options(args: &CommonArgs) -> RunOptions {
     let agent = effective_agent(args, None);
     let agent_bin = effective_agent_bin(args, None, &agent);
@@ -557,6 +620,7 @@ fn to_run_options(args: &CommonArgs) -> RunOptions {
         agent_bin,
         agent_command: args.agent_command.clone(),
         skip_git_repo_check: args.skip_git_repo_check,
+        brake_file: args.brake_file.clone(),
     }
 }
 
@@ -574,6 +638,10 @@ fn to_runner_options(args: &CommonArgs, stored: &RunOptions) -> RunnerOptions {
             .clone()
             .or_else(|| stored.agent_command.clone()),
         skip_git_repo_check: args.skip_git_repo_check || stored.skip_git_repo_check,
+        brake_file: args
+            .brake_file
+            .clone()
+            .or_else(|| stored.brake_file.clone()),
     }
 }
 
@@ -653,7 +721,39 @@ fn effective_agent_bin(args: &CommonArgs, stored: Option<&RunOptions>, agent: &s
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[test]
+    fn planner_prompt_includes_controller_observations() {
+        let options = RunOptions {
+            concurrency: 1,
+            max_retries: 0,
+            model: None,
+            agent: "codex".to_string(),
+            agent_bin: "codex".to_string(),
+            agent_command: None,
+            skip_git_repo_check: true,
+            brake_file: None,
+        };
+        let observations = vec![RunObservation {
+            source: "status-file".to_string(),
+            path: PathBuf::from(".codex-loop/status.md"),
+            captured_at: "2026-06-09T00:00:00Z".to_string(),
+            content: "Observed: narrow verifier fails on missing status propagation.".to_string(),
+        }];
+
+        let prompt = build_planner_prompt(
+            "workflow: prove local Codex control-loop status propagation",
+            None,
+            &options,
+            &observations,
+        );
+
+        assert!(prompt.contains("Controller observations/status object"));
+        assert!(prompt.contains(".codex-loop/status.md"));
+        assert!(prompt.contains("missing status propagation"));
+    }
 
     #[test]
     fn fake_agent_e2e_completes() {
@@ -702,6 +802,8 @@ esac
             agent_command: None,
             codex_bin: None,
             skip_git_repo_check: true,
+            status_files: Vec::new(),
+            brake_file: None,
             yes: true,
         };
         let cwd = temp.path();
@@ -714,7 +816,7 @@ esac
             to_run_options(&args),
         )
         .unwrap();
-        let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args).unwrap();
+        let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args, &[]).unwrap();
         assert_eq!(plan.verification.max_retries, 0);
         attach_plan(&mut state, plan);
         save_state(&run_dir, &mut state).unwrap();
@@ -762,6 +864,8 @@ esac
             agent_command: Some(format!("{}", fake.display())),
             codex_bin: None,
             skip_git_repo_check: true,
+            status_files: Vec::new(),
+            brake_file: None,
             yes: true,
         };
         let cwd = temp.path();
@@ -774,7 +878,7 @@ esac
             to_run_options(&args),
         )
         .unwrap();
-        let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args).unwrap();
+        let plan = create_plan(cwd, &run_dir, &prompt, template.as_ref(), &args, &[]).unwrap();
         attach_plan(&mut state, plan);
         save_state(&run_dir, &mut state).unwrap();
         let resume_args = CommonArgs {
@@ -787,6 +891,8 @@ esac
             agent_command: None,
             codex_bin: None,
             skip_git_repo_check: false,
+            status_files: Vec::new(),
+            brake_file: None,
             yes: true,
         };
         execute_and_report(&mut state, &run_dir, &resume_args).unwrap();
@@ -807,6 +913,8 @@ esac
             agent_command: Some("kimi-k2-cli run --prompt-file {prompt_file}".to_string()),
             codex_bin: None,
             skip_git_repo_check: true,
+            status_files: Vec::new(),
+            brake_file: Some(PathBuf::from(".codex-loop/brake")),
             yes: true,
         };
         let stored = to_run_options(&plan_args);
@@ -821,6 +929,8 @@ esac
             agent_command: None,
             codex_bin: None,
             skip_git_repo_check: false,
+            status_files: Vec::new(),
+            brake_file: None,
             yes: true,
         };
         let runner = to_runner_options(&resume_args, &stored);
@@ -835,5 +945,6 @@ esac
             Some("kimi-k2-cli run --prompt-file {prompt_file}")
         );
         assert!(runner.skip_git_repo_check);
+        assert_eq!(runner.brake_file, Some(PathBuf::from(".codex-loop/brake")));
     }
 }

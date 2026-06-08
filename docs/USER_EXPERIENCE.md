@@ -50,6 +50,17 @@ Goal: a user gets a useful report in under five minutes.
 
 ## Daily UX
 
+### Loop Model
+
+Openflow should make agent looping concrete:
+
+- Closed loop by default: clear goal, planned steps, deterministic observations, verifier gates, stop/handoff conditions.
+- Open loop when requested: broader discovery space, but still bounded by budget, risk, status, and verification.
+- Orchestrator/specialist shape: planner decomposes, workers own narrow tasks, verifiers gate acceptance, report preserves decisions.
+- Reversible-only writes: workers produce patch queues from isolated worktrees; `openflow apply` is a separate command.
+- Fail-closed verification: unsupported, stale, risky, or out-of-scope outputs should be rejected.
+- External brake: `--brake-file <path>` blocks before the next task batch when the file contains non-whitespace text.
+
 ### Audit
 
 ```bash
@@ -137,6 +148,28 @@ Expected result:
 - accepted verifier results are present when verification was required
 - patch files and worker logs exist when referenced
 - final report exists for completed, failed, or blocked runs
+
+### Local Codex Control Loop
+
+Openflow should support a lightweight controller loop around local Codex:
+
+```bash
+mkdir -p .codex-loop
+./scripts/check.sh > .codex-loop/status.md 2>&1
+openflow run "workflow: fix the failing check with the smallest safe change" \
+  --template migration \
+  --status-file .codex-loop/status.md \
+  --brake-file .codex-loop/brake
+```
+
+Expected result:
+
+- the status file is copied into `.openflow/runs/<run-id>/state.json`
+- planner, worker, and verifier prompts include the same controller observations
+- `report.md` includes a Controller Observations section
+- `openflow validate` reports captured observations
+- rerunning `openflow resume --status-file .codex-loop/status.md` refreshes the status object before retrying failed or blocked tasks
+- creating `.codex-loop/brake` with non-empty content blocks before the next task batch
 
 ### Migration
 
