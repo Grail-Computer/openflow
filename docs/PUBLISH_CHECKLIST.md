@@ -34,4 +34,3 @@ Expected result: no real secrets. Documentation may mention placeholder variable
 - Homebrew tap
 - prebuilt macOS/Linux binaries
 - GitHub Action
-- demo GIF
